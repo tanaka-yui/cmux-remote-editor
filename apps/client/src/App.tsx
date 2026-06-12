@@ -10,6 +10,7 @@ import { Terminal } from './components/Terminal'
 import { TokenGate } from './components/TokenGate'
 import { useCmux } from './hooks/useCmux'
 import { useGesture } from './hooks/useGesture'
+import { deriveMouseMode } from './lib/mouse-mode'
 import type { RenderGrid } from './lib/render-grid'
 import { loadSurfaceScreen, saveSurfaceScreen } from './lib/surface-cache'
 import { getAuthToken, saveAuthToken } from './lib/token'
@@ -217,16 +218,24 @@ function Main() {
     }
   }, [historyMode, currentSurface, status, readText])
 
+  // Mouse mode (from the live grid's DECSET modes) gates tap/wheel forwarding.
+  // History mode shows static text, so treat it as no live grid (mouse off).
+  const mouseMode = deriveMouseMode(historyMode ? null : termGrid)
+
   // Gesture handlers: horizontal = tabs, pinch = font size.
   // Vertical swipes intentionally do nothing — they triggered accidental
   // workspace switches; use the sidebar/drawer to change workspaces instead.
+  // While the terminal reports mouse input (nvim etc.), tab-switch swipes are
+  // suppressed so the Terminal can use vertical swipes as wheel scroll.
   const onSwipeLeft = useCallback(() => {
+    if (mouseMode.mouseEnabled) return
     navigateSurface('next')
-  }, [navigateSurface])
+  }, [navigateSurface, mouseMode.mouseEnabled])
 
   const onSwipeRight = useCallback(() => {
+    if (mouseMode.mouseEnabled) return
     navigateSurface('prev')
-  }, [navigateSurface])
+  }, [navigateSurface, mouseMode.mouseEnabled])
 
   const onPinchIn = useCallback(() => {
     setFontSize((s) => Math.max(MIN_FONT_SIZE, s - 1))
@@ -322,6 +331,12 @@ function Main() {
             content={termContent}
             fontSize={fontSize}
             gestureRef={gestureRef}
+            mouseEnabled={mouseMode.mouseEnabled}
+            useSgr={mouseMode.useSgr}
+            onSendMouse={(text) => {
+              if (currentSurface)
+                sendText(currentSurface, text).catch((err) => console.error('[app] mouse error:', err))
+            }}
           />
         )}
 
