@@ -1,4 +1,4 @@
-import { Terminal as WTerminal, useTerminal } from '@wterm/react'
+import { useTerminal, Terminal as WTerminal } from '@wterm/react'
 import type { CSSProperties } from 'react'
 import { useCallback, useEffect, useRef } from 'react'
 import '@wterm/react/css'
