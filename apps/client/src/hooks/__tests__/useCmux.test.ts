@@ -89,6 +89,22 @@ describe('useCmux surface RPC params', () => {
     })
     expect(findReq('surface.send_key')?.params).toEqual({ surface_id: 'surface:7', key: 'enter' })
   })
+
+  it('readGrid は terminal.replay を surface_id で送り render_grid を返す', async () => {
+    const grid = { columns: 80, rows: 24, styles: [], row_spans: [] }
+    hoisted.responses['terminal.replay'] = { render_grid: grid, surface_id: 'surface:7' }
+    const { result } = renderHook(() => useCmux())
+
+    let got: unknown
+    await act(async () => {
+      got = await result.current.readGrid('surface:7')
+    })
+
+    expect(got).toEqual(grid)
+    const req = findReq('terminal.replay')
+    expect(req?.params).toEqual({ surface_id: 'surface:7' })
+    expect(req?.params).not.toHaveProperty('surface_ref')
+  })
 })
 
 describe('useCmux createSurface', () => {

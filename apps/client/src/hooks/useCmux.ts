@@ -8,6 +8,7 @@ import {
   type Surface,
   type Workspace,
 } from '../lib/cmux-rpc'
+import type { RenderGrid } from '../lib/render-grid'
 import { resolveSelectedRef } from '../lib/selection'
 import { getAuthToken } from '../lib/token'
 import { type ConnectionStatus, useWebSocket } from './useWebSocket'
@@ -203,6 +204,18 @@ export function useCmux() {
     [rpc],
   )
 
+  const readGrid = useCallback(
+    async (surfaceRef?: string): Promise<RenderGrid> => {
+      // terminal.replay は render_grid（色/属性/カーソル付きグリッド）を返す。read_text と
+      // 同じく surface_id を読む（surface_ref はフォーカス中へフォールバックする）。
+      const params: Record<string, unknown> = {}
+      if (surfaceRef) params.surface_id = surfaceRef
+      const result = (await rpc('terminal.replay', params)) as { render_grid: RenderGrid }
+      return result.render_grid
+    },
+    [rpc],
+  )
+
   const sendText = useCallback(
     async (surfaceRef: string, text: string) => {
       // surface_id 指定（surface_ref は無視されフォーカス中サーフェスに入力されてしまう）。
@@ -280,6 +293,7 @@ export function useCmux() {
     closeSurface,
     focusSurface,
     readText,
+    readGrid,
     sendText,
     sendKey,
     getTree,
