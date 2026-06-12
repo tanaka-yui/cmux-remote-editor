@@ -76,13 +76,13 @@ pnpm stop     # 両方停止
 
 起動後、ブラウザ/iPhone から **https://<ホスト名>.local:48710/?token=<認証トークン>** を開きます（Safari なら「ホーム画面に追加」で PWA 化）。`http://<ホスト>:48700` へのアクセスはクエリを保持したまま https へ 301 リダイレクトされます。iPhone では先に下記「HTTPS / iPhone への証明書インストール」で mkcert のルート CA を信頼させてください。
 
-> **認証トークン**: ブリッジサーバーは LAN から到達可能かつ cmux が `allowAll` のため、WebSocket 接続に共有トークンを必須としています。トークンは初回起動時に自動生成され `apps/server/.run/token` に保存されます（`pnpm start` の完了メッセージにトークン付き URL が表示されます。`pnpm server:logs` でも確認可）。一度 `?token=...` 付きで開けばブラウザに保存されるので、以降は素の URL でアクセスできます。トークンを固定したい場合は環境変数 `CMUX_REMOTE_TOKEN` を設定するか、`apps/server/.env` に `CMUX_REMOTE_TOKEN=...` を書いてください（Bun が起動時に自動読込。ファイルが無ければ自動生成にフォールバック）。なお HTTPS で保護されるのはブラウザ⇔nginx 間です。ブリッジサーバー (:48701) へ直接つなぐ経路は平文のまま残ります（通常フローでは未使用、トークン認証は必須）。
+> **認証トークン**: ブリッジサーバーは LAN から到達可能かつ cmux が `allowAll` のため、WebSocket 接続に共有トークンを必須としています。トークンは初回起動時に自動生成され `apps/server/.run/token` に保存されます（`pnpm start` の完了メッセージにトークン付き URL が表示されます。`pnpm server:logs` でも確認可）。一度 `?token=...` 付きで開けばブラウザに保存されるので、以降は素の URL でアクセスできます。トークンを固定したい場合は環境変数 `CMUX_REMOTE_TOKEN` を設定するか、`apps/server/.env` に `CMUX_REMOTE_TOKEN=...` を書いてください（Bun が起動時に自動読込。ファイルが無ければ自動生成にフォールバック）。なお本番では nginx⇔ブリッジ間も TLS（WSS/HTTPS）で保護され、ブリッジサーバー (:48701) は `127.0.0.1` のみに束縛されるため LAN から直接到達できません（経路上に平文区間は残りません。トークン認証も必須）。開発モード（`pnpm dev`）はローカルホスト内で完結するため HTTP のままです。
 
 > **Mac のスリープについて**: ホストの Mac がスクリーンロックや蓋閉じでスリープに入ると cmux のレンダリングが止まり、リモートからのライブ表示も更新されなくなります。ロック中もレンダリングを継続したい場合は、[KeepingYouAwake](https://keepingyouawake.app/) などのスリープを防止するアプリの利用をおすすめします。
 
 ### 3. HTTPS / iPhone への証明書インストール
 
-TLS は Docker 内の nginx で終端します。証明書は mkcert のローカル CA で発行され（`pnpm certs:setup`、`pnpm bootstrap` に含まれます）、Mac 側は `mkcert -install` で自動的に信頼されます。
+TLS は Docker 内の nginx で終端し、本番ではホスト側 Bun ブリッジも同じ mkcert 証明書で TLS 終端します（nginx→Bun も暗号化）。証明書は mkcert のローカル CA で発行され（`pnpm certs:setup`、`pnpm bootstrap` に含まれます）、Mac 側は `mkcert -install` で自動的に信頼されます。
 
 iPhone で `https://<ホスト名>.local:48710` を開くには、mkcert のルート CA を一度だけ信頼させます:
 

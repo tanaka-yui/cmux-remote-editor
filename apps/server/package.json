@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "bun run --watch src/index.ts",
     "start": "bun run src/index.ts",
-    "start:bg": "mkdir -p .run && nohup bun src/index.ts >> .run/server.log 2>&1 & echo \"server up on :${PORT:-48701} — logs: apps/server/.run/server.log\"",
+    "start:bg": "mkdir -p .run && CMUX_REMOTE_TLS=1 nohup bun src/index.ts >> .run/server.log 2>&1 & echo \"server up on :${PORT:-48701} (TLS) — logs: apps/server/.run/server.log\"",
     "stop": "PIDS=$(lsof -ti tcp:${PORT:-48701} -sTCP:LISTEN 2>/dev/null); if [ -n \"$PIDS\" ]; then kill $PIDS && echo 'server down'; else echo 'not running'; fi",
     "restart": "bun run stop; sleep 1; bun run start:bg",
     "status": "lsof -ti tcp:${PORT:-48701} -sTCP:LISTEN >/dev/null 2>&1 && echo \"running on :${PORT:-48701}\" || echo stopped",

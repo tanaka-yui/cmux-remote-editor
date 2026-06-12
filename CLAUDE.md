@@ -36,10 +36,10 @@ pnpm server:up|down|status|restart|logs   # ホスト常駐サーバーの管理
 ## アーキテクチャ
 
 ```
-ブラウザ/PWA → nginx (Docker :48710 https / :48700 は https へ 301) → ブリッジサーバー (Bun, ホスト :48701 HTTP) → cmux UDS (JSON-RPC)
+ブラウザ/PWA → nginx (Docker :48710 https / :48700 は https へ 301) → ブリッジサーバー (Bun, ホスト :48701 — 本番は HTTPS/WSS・127.0.0.1 束縛 / dev は HTTP) → cmux UDS (JSON-RPC)
 ```
 
-TLS は nginx で終端する。証明書は mkcert 製（`pnpm certs:setup` → `certs/`、gitignore 済み、compose の volume で nginx にマウント）。Bun ブリッジと開発モードは HTTP のまま。開発時は nginx の代わりに Vite dev サーバー(:5173)が `/ws`・`/health` を :48701 にプロキシする。
+TLS は nginx で終端する。証明書は mkcert 製（`pnpm certs:setup` → `certs/`、gitignore 済み、compose の volume で nginx にマウント）。**本番では Bun ブリッジも同じ証明書で TLS 終端する**（`CMUX_REMOTE_TLS=1` を `server:up` が付与、証明書パスは `CMUX_TLS_CERT`/`CMUX_TLS_KEY` で上書き可・既定は `certs/`）。Bun は `127.0.0.1` のみに束縛し（`CMUX_BIND_HOST` で上書き可・既定 loopback）LAN からの直接到達を遮断するため、nginx→Bun を含め平文区間は残らない。nginx は `proxy_pass https://host.docker.internal:48701` + `proxy_ssl_verify off`（mkcert に `host.docker.internal` SAN が無く、かつホスト内ホップのため検証なし＝機密性のみ確保）。**開発モード（`pnpm dev`）は `CMUX_REMOTE_TLS` 未設定で HTTP のまま**、nginx の代わりに Vite dev サーバー(:5173)が `/ws`・`/health` を :48701 にプロキシする。Docker(VM) が loopback の Bun に到達できない環境では `CMUX_BIND_HOST=0.0.0.0` にフォールバック（その場合も TLS は維持される）。
 
 ### 重要な制約: サーバーは Docker に入れられない
 
