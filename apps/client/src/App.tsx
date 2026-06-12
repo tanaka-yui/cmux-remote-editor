@@ -1,0 +1,202 @@
+import { useCallback, useEffect, useRef, useState } from 'react'
+
+import { DESKTOP_BREAKPOINT, Drawer, SIDEBAR_WIDTH } from './components/Drawer'
+import { Header } from './components/Header'
+import { InputBar } from './components/InputBar'
+import { StatusBar } from './components/StatusBar'
+import { TabBar } from './components/TabBar'
+import { Terminal } from './components/Terminal'
+import { useCmux } from './hooks/useCmux'
+import { useGesture } from './hooks/useGesture'
+
+const POLL_INTERVAL = 1000
+const MIN_FONT_SIZE = 9
+const MAX_FONT_SIZE = 28
+const DEFAULT_FONT_SIZE = 13
+
+export function App() {
+  const {
+    status,
+    workspaces,
+    currentWorkspace,
+    surfaces,
+    currentSurface,
+    notifications,
+    listWorkspaces,
+    selectWorkspace,
+    listPanes,
+    listSurfaces,
+    createSurface,
+    closeSurface,
+    focusSurface,
+    readText,
+    sendText,
+    sendKey,
+    listNotifications,
+    navigateWorkspace,
+    navigateSurface,
+  } = useCmux()
+
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [termContent, setTermContent] = useState('')
+  const [fontSize, setFontSize] = useState(DEFAULT_FONT_SIZE)
+  const pollRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined)
+
+  // Initial data fetch
+  useEffect(() => {
+    if (status !== 'connected') return
+
+    listWorkspaces()
+      .then(() => Promise.all([listPanes(), listSurfaces(), listNotifications()]))
+      .catch((err) => console.error('[app] Init error:', err))
+  }, [status, listWorkspaces, listPanes, listSurfaces, listNotifications])
+
+  // Re-fetch panes and surfaces when workspace changes
+  useEffect(() => {
+    if (status !== 'connected' || !currentWorkspace) return
+    Promise.all([listPanes(currentWorkspace), listSurfaces(currentWorkspace)]).catch(() => {})
+  }, [status, currentWorkspace, listPanes, listSurfaces])
+
+  // Poll terminal content for the selected surface (tab)
+  useEffect(() => {
+    if (status !== 'connected' || !currentSurface) {
+      if (pollRef.current) clearInterval(pollRef.current)
+      return
+    }
+
+    const poll = async () => {
+      try {
+        const text = await readText(currentSurface)
+        setTermContent(text)
+      } catch (err) {
+        console.error('[app] Poll error:', err)
+      }
+    }
+
+    poll()
+    pollRef.current = setInterval(poll, POLL_INTERVAL)
+
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current)
+    }
+  }, [status, currentSurface, readText])
+
+  // Gesture handlers: vertical = workspaces, horizontal = tabs, pinch = font size
+  const onSwipeUp = useCallback(() => {
+    navigateWorkspace('next')
+  }, [navigateWorkspace])
+
+  const onSwipeDown = useCallback(() => {
+    navigateWorkspace('prev')
+  }, [navigateWorkspace])
+
+  const onSwipeLeft = useCallback(() => {
+    navigateSurface('next')
+  }, [navigateSurface])
+
+  const onSwipeRight = useCallback(() => {
+    navigateSurface('prev')
+  }, [navigateSurface])
+
+  const onPinchIn = useCallback(() => {
+    setFontSize((s) => Math.max(MIN_FONT_SIZE, s - 1))
+  }, [])
+
+  const onPinchOut = useCallback(() => {
+    setFontSize((s) => Math.min(MAX_FONT_SIZE, s + 1))
+  }, [])
+
+  const gestureRef = useGesture({
+    onSwipeUp,
+    onSwipeDown,
+    onSwipeLeft,
+    onSwipeRight,
+    onPinchIn,
+    onPinchOut,
+  })
+
+  const [isDesktop, setIsDesktop] = useState(typeof window !== 'undefined' && window.innerWidth >= DESKTOP_BREAKPOINT)
+
+  useEffect(() => {
+    const mq = window.matchMedia(`(min-width: ${DESKTOP_BREAKPOINT}px)`)
+    const handler = (e: MediaQueryListEvent) => setIsDesktop(e.matches)
+    mq.addEventListener('change', handler)
+    return () => mq.removeEventListener('change', handler)
+  }, [])
+
+  const currentWs = workspaces.find((w) => w.ref === currentWorkspace)
+  const currentSurfaceInfo = surfaces.find((s) => s.ref === currentSurface)
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        height: '100dvh',
+        backgroundColor: '#1a1a2e',
+        color: '#e0e0e0',
+        overflow: 'hidden',
+      }}
+    >
+      <Drawer
+        open={drawerOpen}
+        workspaces={workspaces}
+        currentWorkspace={currentWorkspace}
+        notifications={notifications}
+        onSelect={(ref) => {
+          selectWorkspace(ref)
+        }}
+        onClose={() => setDrawerOpen(false)}
+      />
+
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          flex: 1,
+          marginLeft: isDesktop ? SIDEBAR_WIDTH : 0,
+          transition: 'margin-left 0.2s ease-out',
+          overflow: 'hidden',
+        }}
+      >
+        <Header
+          workspaceName={currentWs?.title ?? null}
+          onMenuToggle={() => setDrawerOpen((o) => !o)}
+          showMenuButton={!isDesktop}
+        />
+
+        <TabBar
+          surfaces={surfaces}
+          currentSurface={currentSurface}
+          onSelect={(ref) => {
+            focusSurface(ref)
+          }}
+          onClose={(ref) => {
+            closeSurface(ref, currentWorkspace ?? undefined).catch((err) => console.error('[app] close error:', err))
+          }}
+          onCreate={() => {
+            createSurface(currentWorkspace ?? undefined).catch((err) => console.error('[app] create error:', err))
+          }}
+        />
+
+        <Terminal content={termContent} fontSize={fontSize} gestureRef={gestureRef} />
+
+        <InputBar
+          disabled={!currentSurface}
+          onSendText={(text) => {
+            if (currentSurface) sendText(currentSurface, text).catch((err) => console.error('[app] send error:', err))
+          }}
+          onSendKey={(key) => {
+            if (currentSurface) sendKey(currentSurface, key).catch((err) => console.error('[app] key error:', err))
+          }}
+        />
+
+        <StatusBar
+          status={status}
+          paneName={currentSurfaceInfo?.title ?? currentSurface}
+          paneIndex={surfaces.findIndex((s) => s.ref === currentSurface)}
+          paneCount={surfaces.length}
+        />
+      </div>
+    </div>
+  )
+}

@@ -1,0 +1,20 @@
+# Only the client (nginx PWA) runs in Docker.
+#
+# The Bun bridge server must talk to the cmux Unix socket, and cmux only accepts
+# connections from processes started *inside* cmux (access_mode: cmuxOnly). A
+# container is a separate process tree and is always rejected, so the server runs
+# on the host instead — start it from a cmux terminal with `pnpm server:up`.
+# nginx proxies /ws and /health to that host server via host.docker.internal.
+services:
+  client:
+    build:
+      context: .
+      dockerfile: apps/client/Dockerfile
+    ports:
+      - "48700:80"
+    # Rancher Desktop / Docker Desktop は host.docker.internal を自動でホストへ向ける。
+    # （host-gateway を明示すると VM ブリッジ IP に化けてホストに届かないため指定しない。）
+    # Linux ネイティブ Docker で動かす場合のみ次を有効化:
+    #   extra_hosts:
+    #     - "host.docker.internal:host-gateway"
+    restart: unless-stopped

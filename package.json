@@ -1,0 +1,41 @@
+{
+  "name": "cmux-remote-editor",
+  "private": true,
+  "scripts": {
+    "bootstrap": "pnpm install && pnpm build && pnpm cmux:allow-automation && docker compose build && echo 'Bootstrap complete. Apply allowAll via cmux Settings > Automation (socket mode) OR restart cmux, then run: pnpm start'",
+    "start": "pnpm server:up && docker compose up -d && echo 'Up. PWA: http://localhost:48700 | server logs: pnpm server:logs | stop: pnpm stop'",
+    "stop": "docker compose stop && pnpm server:down",
+    "build": "turbo run build",
+    "check": "turbo run check",
+    "check:fix": "turbo run check:fix",
+    "dev": "turbo run dev",
+    "format": "turbo run format",
+    "format:fix": "turbo run format:fix",
+    "lint": "turbo run lint",
+    "lint:fix": "turbo run lint:fix",
+    "server:up": "pnpm --filter @tanaka-yui/cmux-remote-editor-server start:bg",
+    "server:down": "pnpm --filter @tanaka-yui/cmux-remote-editor-server stop",
+    "server:restart": "pnpm --filter @tanaka-yui/cmux-remote-editor-server restart",
+    "server:status": "pnpm --filter @tanaka-yui/cmux-remote-editor-server status",
+    "server:logs": "pnpm --filter @tanaka-yui/cmux-remote-editor-server logs",
+    "cmux:allow-automation": "node scripts/set-cmux-socket-mode.mjs allowAll",
+    "cmux:revert-automation": "node scripts/set-cmux-socket-mode.mjs cmuxOnly",
+    "sort-package": "sort-package-json --check ./package.json ./apps/*/package.json",
+    "sort-package:fix": "sort-package-json ./package.json ./apps/*/package.json",
+    "test": "turbo run test"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.9",
+    "@types/bun": "1.3.11",
+    "@types/react": "19.2.14",
+    "ink-testing-library": "4.0.0",
+    "sort-package-json": "3.6.1",
+    "turbo": "2.8.21",
+    "typescript": "6.0.2"
+  },
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": "24.14.1",
+    "pnpm": "10.33.0"
+  }
+}
