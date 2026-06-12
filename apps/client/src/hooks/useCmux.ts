@@ -8,6 +8,7 @@ import {
   type Surface,
   type Workspace,
 } from '../lib/cmux-rpc'
+import { resolveSelectedRef } from '../lib/selection'
 import { getAuthToken } from '../lib/token'
 import { type ConnectionStatus, useWebSocket } from './useWebSocket'
 
@@ -77,8 +78,14 @@ export function useCmux() {
     const result = (await rpc('workspace.list')) as { workspaces: Workspace[] }
     const wsList = result.workspaces ?? []
     setWorkspaces(wsList)
-    const active = wsList.find((w) => w.selected)
-    if (active) setCurrentWorkspace(active.ref)
+    setCurrentWorkspace((prev) =>
+      resolveSelectedRef(
+        prev,
+        wsList,
+        (w) => w.ref,
+        (w) => !!w.selected,
+      ),
+    )
     return wsList
   }, [rpc])
 
@@ -94,8 +101,14 @@ export function useCmux() {
       const result = (await rpc('pane.list', params)) as { panes: Pane[] }
       const paneList = result.panes ?? []
       setPanes(paneList)
-      const active = paneList.find((p) => p.focused)
-      if (active) setCurrentPane(active.selected_surface_ref)
+      setCurrentPane((prev) =>
+        resolveSelectedRef(
+          prev,
+          paneList,
+          (p) => p.selected_surface_ref,
+          (p) => !!p.focused,
+        ),
+      )
       return paneList
     },
     [rpc],
@@ -116,14 +129,16 @@ export function useCmux() {
       const result = (await rpc('surface.list', params)) as { surfaces?: Surface[] }
       const list = result.surfaces ?? []
       setSurfaces(list)
-      setCurrentSurface((prev) => {
-        const active = list.find((s) => s.selected)
-        if (active) return active.ref
-        // Keep the user's selection if it still exists; otherwise fall back to
-        // the first tab so a closed surface is never polled forever.
-        if (prev && list.some((s) => s.ref === prev)) return prev
-        return list[0]?.ref ?? null
-      })
+      // アプリ側の選択を優先し、cmux の selected には初回のみ追従する。
+      // 選択中サーフェスがリモートで閉じられたら先頭へ退避する。
+      setCurrentSurface((prev) =>
+        resolveSelectedRef(
+          prev,
+          list,
+          (s) => s.ref,
+          (s) => s.selected,
+        ),
+      )
       return list
     },
     [rpc],
