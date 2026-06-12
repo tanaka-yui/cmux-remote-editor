@@ -78,6 +78,8 @@ pnpm stop     # 両方停止
 
 > **認証トークン**: ブリッジサーバーは LAN から到達可能かつ cmux が `allowAll` のため、WebSocket 接続に共有トークンを必須としています。トークンは初回起動時に自動生成され `apps/server/.run/token` に保存されます（`pnpm start` の完了メッセージにトークン付き URL が表示されます。`pnpm server:logs` でも確認可）。一度 `?token=...` 付きで開けばブラウザに保存されるので、以降は素の URL でアクセスできます。トークンを固定したい場合は環境変数 `CMUX_REMOTE_TOKEN` を設定するか、`apps/server/.env` に `CMUX_REMOTE_TOKEN=...` を書いてください（Bun が起動時に自動読込。ファイルが無ければ自動生成にフォールバック）。なお HTTPS で保護されるのはブラウザ⇔nginx 間です。ブリッジサーバー (:48701) へ直接つなぐ経路は平文のまま残ります（通常フローでは未使用、トークン認証は必須）。
 
+> **Mac のスリープについて**: ホストの Mac がスクリーンロックや蓋閉じでスリープに入ると cmux のレンダリングが止まり、リモートからのライブ表示も更新されなくなります。ロック中もレンダリングを継続したい場合は、[KeepingYouAwake](https://keepingyouawake.app/) などのスリープを防止するアプリの利用をおすすめします。
+
 ### 3. HTTPS / iPhone への証明書インストール
 
 TLS は Docker 内の nginx で終端します。証明書は mkcert のローカル CA で発行され（`pnpm certs:setup`、`pnpm bootstrap` に含まれます）、Mac 側は `mkcert -install` で自動的に信頼されます。

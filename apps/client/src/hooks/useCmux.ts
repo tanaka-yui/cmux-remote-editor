@@ -89,10 +89,26 @@ export function useCmux() {
     return wsList
   }, [rpc])
 
-  const selectWorkspace = useCallback(async (ref: string) => {
-    // PWA側の表示切替のみ。ローカルcmuxのフォーカスは変更しない。
-    setCurrentWorkspace(ref)
-  }, [])
+  const selectWorkspace = useCallback(
+    (ref: string) => {
+      if (ref === currentWorkspace) return
+      // cmux は選択中ワークスペース以外のターミナルを読めない（surface.read_text が
+      // internal_error を返す）ため、cmux 側のワークスペースも追従して切り替える。
+      // タブ選択は PWA 側のみで、ローカルのペインフォーカスは奪わない。
+      rpc('workspace.select', { workspace_id: ref }).catch((err) =>
+        console.error('[cmux] workspace.select error:', err),
+      )
+      // 前ワークスペースの surfaces/pane 状態を即座に空へリセットする。これをしないと、
+      // 新ワークスペースの surface.list が非同期で解決するまで（失敗時は恒久的に）
+      // 前ワークスペースのタブ・ターミナル内容が残って見えてしまう。
+      setCurrentWorkspace(ref)
+      setSurfaces([])
+      setCurrentSurface(null)
+      setPanes([])
+      setCurrentPane(null)
+    },
+    [currentWorkspace, rpc],
+  )
 
   const listPanes = useCallback(
     async (workspaceRef?: string) => {
@@ -146,12 +162,20 @@ export function useCmux() {
 
   const createSurface = useCallback(
     async (workspaceRef?: string) => {
+      const beforeRefs = new Set(surfaces.map((s) => s.ref))
       const params: Record<string, unknown> = {}
       if (workspaceRef) params.workspace_ref = workspaceRef
       await rpc('surface.create', params)
-      return listSurfaces(workspaceRef)
+      const list = await listSurfaces(workspaceRef)
+      // 新規作成したサーフェスへ明示的に切り替える。listSurfaces はアプリ優先で既存の
+      // 選択(prev)を維持するため、これがないと新タブが作られても表示が切り替わらず、
+      // タブ据え置きのまま中身だけ入れ替わったように見えてしまう。作成前後の差分で
+      // 新 ref を特定する（selected フラグはマルチペインで複数 true になり得るため）。
+      const created = list.find((s) => !beforeRefs.has(s.ref))
+      if (created) focusSurface(created.ref)
+      return list
     },
-    [rpc, listSurfaces],
+    [rpc, listSurfaces, focusSurface, surfaces],
   )
 
   const closeSurface = useCallback(
@@ -167,7 +191,9 @@ export function useCmux() {
   const readText = useCallback(
     async (surfaceRef?: string, opts?: { scrollback?: boolean; lines?: number }): Promise<string> => {
       const params: Record<string, unknown> = {}
-      if (surfaceRef) params.surface_ref = surfaceRef
+      // cmux ソケットは surface_id を読む。surface_ref は無視され、フォーカス中の
+      // サーフェスへフォールバックするため、タブを切り替えても表示が変わらなくなる。
+      if (surfaceRef) params.surface_id = surfaceRef
       // scrollback/lines は ws.ts が surface.read_text を素通しするためサーバー変更なしで cmux に届く。
       if (opts?.scrollback) params.scrollback = true
       if (opts?.lines !== undefined) params.lines = opts.lines
@@ -179,14 +205,15 @@ export function useCmux() {
 
   const sendText = useCallback(
     async (surfaceRef: string, text: string) => {
-      await rpc('surface.send_text', { surface_ref: surfaceRef, text })
+      // surface_id 指定（surface_ref は無視されフォーカス中サーフェスに入力されてしまう）。
+      await rpc('surface.send_text', { surface_id: surfaceRef, text })
     },
     [rpc],
   )
 
   const sendKey = useCallback(
     async (surfaceRef: string, key: string) => {
-      await rpc('surface.send_key', { surface_ref: surfaceRef, key })
+      await rpc('surface.send_key', { surface_id: surfaceRef, key })
     },
     [rpc],
   )

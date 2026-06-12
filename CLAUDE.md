@@ -58,7 +58,7 @@ cmux ソケットは既定の `cmuxOnly` モードで「cmux の子孫プロセ�
 
 ### クライアント (`apps/client/src/`)
 
-- `hooks/useCmux.ts` — 中核。WS 上に Promise ベースの RPC 層（pending Map + 10 秒タイムアウト）を構築し、workspace/pane/surface の状態と操作を提供。**タブ・ワークスペース切替は PWA 側の表示のみ変更し、ローカル cmux のフォーカスは奪わない**（`surface.focus` RPC は使わない設計）。
+- `hooks/useCmux.ts` — 中核。WS 上に Promise ベースの RPC 層（pending Map + 10 秒タイムアウト）を構築し、workspace/pane/surface の状態と操作を提供。**タブ切替は PWA 側の表示のみ変更し、ローカル cmux のペインフォーカスは奪わない**（`surface.focus` RPC は使わない設計）。**ワークスペース切替は `workspace.select` で cmux 側も追従させる** — cmux は選択中ワークスペース以外のターミナルを `read_text` できない（`internal_error`）ため、追従なしでは別ワークスペースのライブ表示が不可能。注意: cmux ソケットの surface 系 RPC（read_text/send_text/send_key/close）はパラメータ `surface_id` を読む。`surface_ref` は無視され、フォーカス中サーフェスへ暗黙にフォールバックする。
 - `components/Terminal.tsx` — `@wterm/react` でレンダリング。可視サーフェスを `surface.read_text` で 1 秒間隔ポーリング。
 - `lib/token.ts` — URL の `?token=` を localStorage に保存（URL は書き換えない）。WS 接続 URL に常に付与。
 - PWA は `vite-plugin-pwa`（autoUpdate）。workbox の `navigateFallbackDenylist` で `/ws`・`/health` を Service Worker から除外している — プロキシ対象のパスを増やす場合はここにも追加が必要。

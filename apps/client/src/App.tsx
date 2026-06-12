@@ -60,7 +60,6 @@ function Main() {
     sendText,
     sendKey,
     listNotifications,
-    navigateWorkspace,
     navigateSurface,
   } = useCmux()
 
@@ -84,8 +83,11 @@ function Main() {
     let retryTimer: ReturnType<typeof setTimeout> | undefined
 
     const init = () => {
+      // panes/surfaces はここで取得しない。引数なしの listSurfaces() はサーバーが全
+      // ワークスペースの surface を返すため、他ワークスペースのタブが混入する。これらは
+      // currentWorkspace が決まってから下の effect が workspace_ref 付きで取得する。
       listWorkspaces()
-        .then(() => Promise.all([listPanes(), listSurfaces(), listNotifications()]))
+        .then(() => listNotifications())
         .catch((err) => {
           console.error('[app] Init error:', err)
           if (!cancelled) retryTimer = setTimeout(init, INIT_RETRY_INTERVAL)
@@ -97,12 +99,28 @@ function Main() {
       cancelled = true
       if (retryTimer) clearTimeout(retryTimer)
     }
-  }, [status, listWorkspaces, listPanes, listSurfaces, listNotifications])
+  }, [status, listWorkspaces, listNotifications])
 
-  // Re-fetch panes and surfaces when workspace changes
+  // Re-fetch panes and surfaces when the (app-selected) workspace changes — always
+  // scoped to currentWorkspace so other workspaces' surfaces never leak in. Retried
+  // on transient failure so a brief cmux outage doesn't leave the tab bar empty.
   useEffect(() => {
     if (status !== 'connected' || !currentWorkspace) return
-    Promise.all([listPanes(currentWorkspace), listSurfaces(currentWorkspace)]).catch(() => {})
+
+    let cancelled = false
+    let retryTimer: ReturnType<typeof setTimeout> | undefined
+
+    const fetchWorkspace = () => {
+      Promise.all([listPanes(currentWorkspace), listSurfaces(currentWorkspace)]).catch(() => {
+        if (!cancelled) retryTimer = setTimeout(fetchWorkspace, INIT_RETRY_INTERVAL)
+      })
+    }
+    fetchWorkspace()
+
+    return () => {
+      cancelled = true
+      if (retryTimer) clearTimeout(retryTimer)
+    }
   }, [status, currentWorkspace, listPanes, listSurfaces])
 
   // Surface 切替時はまずキャッシュから即座にハイドレートし、切断/リロード直後でも
@@ -193,15 +211,9 @@ function Main() {
     }
   }, [historyMode, currentSurface, status, readText])
 
-  // Gesture handlers: vertical = workspaces, horizontal = tabs, pinch = font size
-  const onSwipeUp = useCallback(() => {
-    navigateWorkspace('next')
-  }, [navigateWorkspace])
-
-  const onSwipeDown = useCallback(() => {
-    navigateWorkspace('prev')
-  }, [navigateWorkspace])
-
+  // Gesture handlers: horizontal = tabs, pinch = font size.
+  // Vertical swipes intentionally do nothing — they triggered accidental
+  // workspace switches; use the sidebar/drawer to change workspaces instead.
   const onSwipeLeft = useCallback(() => {
     navigateSurface('next')
   }, [navigateSurface])
@@ -219,8 +231,6 @@ function Main() {
   }, [])
 
   const gestureRef = useGesture({
-    onSwipeUp,
-    onSwipeDown,
     onSwipeLeft,
     onSwipeRight,
     onPinchIn,

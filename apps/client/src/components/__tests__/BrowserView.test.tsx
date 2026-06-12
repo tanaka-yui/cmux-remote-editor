@@ -9,11 +9,9 @@ const noop = () => {}
 describe('BrowserView', () => {
   afterEach(cleanup)
 
-  it('url を iframe の src に反映する', () => {
+  it('iframe は描画しない', () => {
     const { container } = render(<BrowserView url="https://example.com/" title="Example Domain" gestureRef={noop} />)
-    const iframe = container.querySelector('iframe')
-    expect(iframe).not.toBeNull()
-    expect(iframe?.getAttribute('src')).toBe('https://example.com/')
+    expect(container.querySelector('iframe')).toBeNull()
   })
 
   it('「新しいタブで開く」リンクの href が url と一致する', () => {
@@ -23,14 +21,15 @@ describe('BrowserView', () => {
     expect(link.getAttribute('target')).toBe('_blank')
   })
 
-  it('title を表示する', () => {
+  it('title と url を表示する', () => {
     render(<BrowserView url="https://example.com/" title="Example Domain" gestureRef={noop} />)
     expect(screen.getByText('Example Domain')).toBeTruthy()
+    expect(screen.getByText('https://example.com/')).toBeTruthy()
   })
 
-  it('url が空なら iframe を描画せず代替表示する', () => {
-    const { container } = render(<BrowserView url="" title="空タブ" gestureRef={noop} />)
-    expect(container.querySelector('iframe')).toBeNull()
+  it('url が空ならリンクを描画せず代替表示する', () => {
+    render(<BrowserView url="" title="空タブ" gestureRef={noop} />)
+    expect(screen.queryByRole('link')).toBeNull()
     expect(screen.getByText('URL を取得できませんでした')).toBeTruthy()
   })
 })

@@ -8,8 +8,8 @@ const ZOOMING_IN = 'ZOOMING_IN'
 const ZOOMING_OUT = 'ZOOMING_OUT'
 
 interface UseGestureOptions {
-  onSwipeUp: () => void
-  onSwipeDown: () => void
+  onSwipeUp?: () => void
+  onSwipeDown?: () => void
   onSwipeLeft: () => void
   onSwipeRight: () => void
   onPinchIn?: () => void
@@ -31,10 +31,12 @@ export function useGesture(options: UseGestureOptions) {
 
   const swipe = useSwipeable({
     onSwipedUp: () => {
+      if (!optionsRef.current.onSwipeUp) return
       optionsRef.current.onSwipeUp()
       haptic()
     },
     onSwipedDown: () => {
+      if (!optionsRef.current.onSwipeDown) return
       optionsRef.current.onSwipeDown()
       haptic()
     },
