@@ -156,7 +156,9 @@ export function useCmux() {
 
   const closeSurface = useCallback(
     async (surfaceRef: string, workspaceRef?: string) => {
-      await rpc('surface.close', { surface_ref: surfaceRef })
+      // cmux ソケットの surface.close は `surface_id` を読む（`surface_ref` は無視され
+      // フォーカス中のサーフェスにフォールバックする）。値は短縮 ref で受理される。
+      await rpc('surface.close', { surface_id: surfaceRef })
       return listSurfaces(workspaceRef)
     },
     [rpc, listSurfaces],
