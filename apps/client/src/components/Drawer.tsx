@@ -378,7 +378,8 @@ export function Drawer({
     />
   )
 
-  // Desktop: static sidebar
+  // Desktop/タブレット: ピン留めサイドバー。既定で開いた状態（自動収納しない）だが、
+  // ヘッダーのメニューボタンで開閉できる。閉じたら画面外へスライドし、本文が全幅になる。
   if (isDesktop) {
     return (
       <nav
@@ -394,6 +395,8 @@ export function Drawer({
           flexDirection: 'column',
           paddingTop: 'env(safe-area-inset-top)',
           zIndex: 50,
+          transform: open ? 'translateX(0)' : 'translateX(-100%)',
+          transition: 'transform 0.2s ease-out',
         }}
       >
         <div

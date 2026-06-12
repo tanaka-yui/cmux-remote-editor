@@ -12,7 +12,6 @@ const cmux = vi.hoisted(() => ({
 }))
 
 vi.mock('../hooks/useCmux', () => ({ useCmux: () => cmux.state }))
-vi.mock('../hooks/useGesture', () => ({ useGesture: () => () => {} }))
 vi.mock('../components/Terminal', () => ({ Terminal: () => null }))
 vi.mock('../lib/token', () => ({ getAuthToken: () => 'tok', saveAuthToken: () => {} }))
 

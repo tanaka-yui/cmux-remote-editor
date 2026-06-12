@@ -3,14 +3,13 @@ import type { CSSProperties } from 'react'
 interface BrowserViewProps {
   url: string
   title: string
-  gestureRef: (el: HTMLDivElement | null) => void
 }
 
 // Most real sites (Google, AWS, GitHub) return X-Frame-Options / CSP
 // frame-ancestors and refuse to render in an iframe, leaving a blank white
 // pane. Embedding is not attempted: the title and the open-in-new-tab link
 // are shown front and center instead.
-export function BrowserView({ url, title, gestureRef }: BrowserViewProps) {
+export function BrowserView({ url, title }: BrowserViewProps) {
   const wrapperStyle: CSSProperties = {
     flex: 1,
     minHeight: 0,
@@ -28,14 +27,14 @@ export function BrowserView({ url, title, gestureRef }: BrowserViewProps) {
 
   if (!url) {
     return (
-      <div ref={gestureRef} style={wrapperStyle}>
+      <div style={wrapperStyle}>
         <div style={{ color: '#8a8aa0' }}>URL を取得できませんでした</div>
       </div>
     )
   }
 
   return (
-    <div ref={gestureRef} style={wrapperStyle}>
+    <div style={wrapperStyle}>
       <div style={{ fontSize: 20, fontWeight: 600, color: '#e0e0e0', overflowWrap: 'anywhere' }}>{title}</div>
       <div style={{ fontSize: 12, color: '#8a8aa0', overflowWrap: 'anywhere' }}>{url}</div>
       <a

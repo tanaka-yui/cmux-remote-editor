@@ -4,34 +4,32 @@
   "type": "module",
   "scripts": {
     "build": "tsc && vite build",
-    "dev": "vite",
-    "preview": "vite preview",
-    "test": "vitest run",
     "check": "tsc --noEmit && biome check ./src",
     "check:fix": "biome check --write ./src",
+    "dev": "vite",
     "format": "biome format ./src && biome format ./public",
     "format:fix": "biome format --write ./src && biome format --write ./public",
     "lint": "biome lint ./src && biome lint ./public",
-    "lint:fix": "biome lint --write ./src && biome lint --write ./public"
+    "lint:fix": "biome lint --write ./src && biome lint --write ./public",
+    "preview": "vite preview",
+    "test": "vitest run"
   },
   "dependencies": {
-    "@wterm/dom": "^0.3.0",
-    "@wterm/react": "^0.3.0",
-    "react": "19.2.4",
-    "react-dom": "19.2.4",
-    "react-swipeable": "^7.0.2",
-    "react-use": "^17.6.1"
+    "@wterm/dom": "0.3.0",
+    "@wterm/react": "0.3.0",
+    "react": "19.2.7",
+    "react-dom": "19.2.7"
   },
   "devDependencies": {
-    "@testing-library/react": "16.1.0",
-    "@types/react": "19.2.4",
-    "@types/react-dom": "19.0.0",
-    "@vitejs/plugin-react": "6.0.1",
-    "jsdom": "29.0.1",
-    "typescript": "6.0.2",
-    "vite": "8.0.3",
-    "vite-plugin-pwa": "^1.3.0",
-    "vitest": "4.1.2",
-    "workbox-window": "^7.4.1"
+    "@testing-library/react": "16.3.2",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.2",
+    "jsdom": "29.1.1",
+    "typescript": "6.0.3",
+    "vite": "8.0.16",
+    "vite-plugin-pwa": "1.3.0",
+    "vitest": "4.1.8",
+    "workbox-window": "7.4.1"
   }
 }

@@ -1,4 +1,8 @@
+import { useEffect, useState } from 'react'
 import type { ConnectionStatus } from '../hooks/useWebSocket'
+
+// connected からの一瞬の切断（即再接続）でステータス表示をチラつかせない猶予時間（ms）。
+const OFFLINE_GRACE_MS = 2000
 
 interface StatusBarProps {
   status: ConnectionStatus
@@ -26,13 +30,26 @@ const STATUS_CONFIG: Record<ConnectionStatus, { label: string; color: string }> 
 }
 
 export function StatusBar({ status, paneName, paneIndex, paneCount, lastUpdated, historyMode }: StatusBarProps) {
-  const config = STATUS_CONFIG[status]
+  // 接続済みからの一瞬の切断はチラつかせない。connected は即時、初回接続中(まだ未接続)も即時、
+  // connected→切断のときだけ OFFLINE_GRACE_MS 遅延して反映する。
+  const [shownStatus, setShownStatus] = useState<ConnectionStatus>(status)
+  useEffect(() => {
+    if (status === shownStatus) return
+    if (status === 'connected' || shownStatus !== 'connected') {
+      setShownStatus(status)
+      return
+    }
+    const t = setTimeout(() => setShownStatus(status), OFFLINE_GRACE_MS)
+    return () => clearTimeout(t)
+  }, [status, shownStatus])
+
+  const config = STATUS_CONFIG[shownStatus]
 
   // 切断中（オフライン保持）や履歴モードでは、表示内容がいつ時点のものかを明示する。
   let notice: string | null = null
   if (historyMode) {
     notice = lastUpdated ? `履歴 · ${formatClock(lastUpdated)}時点` : '履歴'
-  } else if (status !== 'connected' && lastUpdated) {
+  } else if (shownStatus !== 'connected' && lastUpdated) {
     notice = `オフライン · 最終 ${formatClock(lastUpdated)}`
   }
 
@@ -42,14 +59,16 @@ export function StatusBar({ status, paneName, paneIndex, paneCount, lastUpdated,
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
-        height: 28,
+        // box-sizing:border-box のため、固定 height に paddingBottom(safe-area) を足すと内容領域が
+        // その分潰れて borderTop にかぶる(iPhone/iPad)。高さ自体に safe-area を加算して 28px を確保する。
+        height: 'calc(28px + env(safe-area-inset-bottom))',
         padding: '0 12px',
+        paddingBottom: 'env(safe-area-inset-bottom)',
         backgroundColor: '#16213e',
         borderTop: '1px solid #2a2a4e',
         fontSize: 12,
         color: '#888',
         flexShrink: 0,
-        paddingBottom: 'env(safe-area-inset-bottom)',
       }}
     >
       <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>

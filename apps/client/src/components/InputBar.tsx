@@ -1,12 +1,15 @@
 import { useState } from 'react'
+import type { SpecialKey } from '../lib/terminal-keys'
 
 interface InputBarProps {
   disabled: boolean
   onSendText: (text: string) => void
-  onSendKey: (key: string) => void
+  onSendKey: (key: SpecialKey) => void
+  // フォントサイズ増減（+1 拡大 / -1 縮小）。ピンチ廃止の代替。
+  onAdjustFontSize: (delta: number) => void
 }
 
-const SPECIAL_KEYS: { label: string; key: string }[] = [
+const SPECIAL_KEYS: { label: string; key: SpecialKey }[] = [
   { label: 'Esc', key: 'escape' },
   { label: 'Tab', key: 'tab' },
   { label: '^C', key: 'ctrl+c' },
@@ -27,7 +30,43 @@ const keyButtonStyle = {
   flexShrink: 0,
 } as const
 
-export function InputBar({ disabled, onSendText, onSendKey }: InputBarProps) {
+// 押している間だけ背景色を変えてフィードバックする小ボタン（タップ/クリック両対応）。
+function KeyButton({
+  label,
+  onPress,
+  disabled,
+  ariaLabel,
+}: {
+  label: string
+  onPress: () => void
+  disabled?: boolean
+  ariaLabel?: string
+}) {
+  const [pressed, setPressed] = useState(false)
+  const release = () => setPressed(false)
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      aria-label={ariaLabel}
+      onClick={onPress}
+      onPointerDown={() => setPressed(true)}
+      onPointerUp={release}
+      onPointerLeave={release}
+      onPointerCancel={release}
+      style={{
+        ...keyButtonStyle,
+        background: pressed ? '#4a5a9a' : keyButtonStyle.background,
+        borderColor: pressed ? '#6a7ace' : '#2a2a4e',
+        color: pressed ? '#fff' : keyButtonStyle.color,
+      }}
+    >
+      {label}
+    </button>
+  )
+}
+
+export function InputBar({ disabled, onSendText, onSendKey, onAdjustFontSize }: InputBarProps) {
   const [text, setText] = useState('')
 
   // Send the typed text then a newline so the command runs, matching how a user
@@ -100,10 +139,11 @@ export function InputBar({ disabled, onSendText, onSendKey }: InputBarProps) {
       </div>
       <div style={{ display: 'flex', gap: 6, overflowX: 'auto' }}>
         {SPECIAL_KEYS.map((k) => (
-          <button key={k.key} type="button" disabled={disabled} onClick={() => onSendKey(k.key)} style={keyButtonStyle}>
-            {k.label}
-          </button>
+          <KeyButton key={k.key} label={k.label} disabled={disabled} onPress={() => onSendKey(k.key)} />
         ))}
+        {/* フォント増減（ピンチの代替）。表示倍率なので surface 未選択でも有効。 */}
+        <KeyButton label="A-" ariaLabel="フォント縮小" onPress={() => onAdjustFontSize(-1)} />
+        <KeyButton label="A+" ariaLabel="フォント拡大" onPress={() => onAdjustFontSize(1)} />
       </div>
     </div>
   )

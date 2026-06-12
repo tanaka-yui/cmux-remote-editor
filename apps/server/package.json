@@ -3,25 +3,25 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "bun run --watch src/index.ts",
-    "start": "bun run src/index.ts",
-    "start:bg": "mkdir -p .run && CMUX_REMOTE_TLS=1 nohup bun src/index.ts >> .run/server.log 2>&1 & echo \"server up on :${PORT:-48701} (TLS) — logs: apps/server/.run/server.log\"",
-    "stop": "PIDS=$(lsof -ti tcp:${PORT:-48701} -sTCP:LISTEN 2>/dev/null); if [ -n \"$PIDS\" ]; then kill $PIDS && echo 'server down'; else echo 'not running'; fi",
-    "restart": "bun run stop; sleep 1; bun run start:bg",
-    "status": "lsof -ti tcp:${PORT:-48701} -sTCP:LISTEN >/dev/null 2>&1 && echo \"running on :${PORT:-48701}\" || echo stopped",
-    "logs": "tail -f .run/server.log",
-    "test": "bun test",
     "check": "tsc --noEmit && biome check ./src",
     "check:fix": "biome check --write ./src",
+    "dev": "bun run --watch src/index.ts",
     "format": "biome format ./src && biome format ./public",
     "format:fix": "biome format --write ./src",
     "lint": "biome lint ./src",
-    "lint:fix": "biome lint --write ./src"
+    "lint:fix": "biome lint --write ./src",
+    "logs": "tail -f .run/server.log",
+    "restart": "bun run stop; sleep 1; bun run start:bg",
+    "start": "bun run src/index.ts",
+    "start:bg": "mkdir -p .run && CMUX_REMOTE_TLS=1 nohup bun src/index.ts >> .run/server.log 2>&1 & echo \"server up on :${PORT:-48701} (TLS) — logs: apps/server/.run/server.log\"",
+    "status": "lsof -ti tcp:${PORT:-48701} -sTCP:LISTEN >/dev/null 2>&1 && echo \"running on :${PORT:-48701}\" || echo stopped",
+    "stop": "PIDS=$(lsof -ti tcp:${PORT:-48701} -sTCP:LISTEN 2>/dev/null); if [ -n \"$PIDS\" ]; then kill $PIDS && echo 'server down'; else echo 'not running'; fi",
+    "test": "bun test"
   },
   "dependencies": {
-    "hono": "4.7.0"
+    "hono": "4.12.25"
   },
   "devDependencies": {
-    "@types/bun": "1.3.11"
+    "@types/bun": "1.3.14"
   }
 }

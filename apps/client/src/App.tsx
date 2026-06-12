@@ -9,10 +9,10 @@ import { TabBar } from './components/TabBar'
 import { Terminal } from './components/Terminal'
 import { TokenGate } from './components/TokenGate'
 import { useCmux } from './hooks/useCmux'
-import { useGesture } from './hooks/useGesture'
 import { deriveMouseMode } from './lib/mouse-mode'
 import type { RenderGrid } from './lib/render-grid'
 import { loadSurfaceScreen, saveSurfaceScreen } from './lib/surface-cache'
+import { encodeKey, isAppCursorMode } from './lib/terminal-keys'
 import { getAuthToken, saveAuthToken } from './lib/token'
 
 const POLL_INTERVAL = 1000
@@ -62,12 +62,13 @@ function Main() {
     readText,
     readGrid,
     sendText,
-    sendKey,
     listNotifications,
-    navigateSurface,
   } = useCmux()
 
-  const [drawerOpen, setDrawerOpen] = useState(false)
+  // デスクトップ/タブレットでは既定でドロワーを開く（ピン留め）。iPhone 等は閉じた状態で開始。
+  const [drawerOpen, setDrawerOpen] = useState(
+    () => typeof window !== 'undefined' && window.innerWidth >= DESKTOP_BREAKPOINT,
+  )
   const [termContent, setTermContent] = useState('')
   const [termGrid, setTermGrid] = useState<RenderGrid | null>(null)
   const [fontSize, setFontSize] = useState(DEFAULT_FONT_SIZE)
@@ -218,45 +219,27 @@ function Main() {
     }
   }, [historyMode, currentSurface, status, readText])
 
-  // Mouse mode (from the live grid's DECSET modes) gates tap/wheel forwarding.
+  // Mouse mode (from the live grid's DECSET modes) gates tap/click forwarding.
   // History mode shows static text, so treat it as no live grid (mouse off).
   const mouseMode = deriveMouseMode(historyMode ? null : termGrid)
+  // 方向キーの \x1b[ / \x1bO 出し分け用（DECCKM）。履歴モードはライブグリッド無し扱い。
+  const appCursor = isAppCursorMode(historyMode ? null : termGrid)
 
-  // Gesture handlers: horizontal = tabs, pinch = font size.
-  // Vertical swipes intentionally do nothing — they triggered accidental
-  // workspace switches; use the sidebar/drawer to change workspaces instead.
-  // While the terminal reports mouse input (nvim etc.), tab-switch swipes are
-  // suppressed so the Terminal can use vertical swipes as wheel scroll.
-  const onSwipeLeft = useCallback(() => {
-    if (mouseMode.mouseEnabled && mouseMode.useSgr) return
-    navigateSurface('next')
-  }, [navigateSurface, mouseMode.mouseEnabled, mouseMode.useSgr])
-
-  const onSwipeRight = useCallback(() => {
-    if (mouseMode.mouseEnabled && mouseMode.useSgr) return
-    navigateSurface('prev')
-  }, [navigateSurface, mouseMode.mouseEnabled, mouseMode.useSgr])
-
-  const onPinchIn = useCallback(() => {
-    setFontSize((s) => Math.max(MIN_FONT_SIZE, s - 1))
+  // Terminal の二本指ピンチからフォントサイズを増減する（+1 拡大 / -1 縮小）。
+  // タブ切替スワイプは廃止し、二本指パンは Terminal 内のスクロールで完結する。
+  const adjustFontSize = useCallback((delta: number) => {
+    setFontSize((s) => Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, s + delta)))
   }, [])
-
-  const onPinchOut = useCallback(() => {
-    setFontSize((s) => Math.min(MAX_FONT_SIZE, s + 1))
-  }, [])
-
-  const gestureRef = useGesture({
-    onSwipeLeft,
-    onSwipeRight,
-    onPinchIn,
-    onPinchOut,
-  })
 
   const [isDesktop, setIsDesktop] = useState(typeof window !== 'undefined' && window.innerWidth >= DESKTOP_BREAKPOINT)
 
   useEffect(() => {
     const mq = window.matchMedia(`(min-width: ${DESKTOP_BREAKPOINT}px)`)
-    const handler = (e: MediaQueryListEvent) => setIsDesktop(e.matches)
+    // ブレークポイントを跨いだら、デスクトップ化で開く（ピン留め）/ モバイル化で閉じる。
+    const handler = (e: MediaQueryListEvent) => {
+      setIsDesktop(e.matches)
+      setDrawerOpen(e.matches)
+    }
     mq.addEventListener('change', handler)
     return () => mq.removeEventListener('change', handler)
   }, [])
@@ -292,7 +275,7 @@ function Main() {
           display: 'flex',
           flexDirection: 'column',
           flex: 1,
-          marginLeft: isDesktop ? SIDEBAR_WIDTH : 0,
+          marginLeft: isDesktop && drawerOpen ? SIDEBAR_WIDTH : 0,
           transition: 'margin-left 0.2s ease-out',
           overflow: 'hidden',
         }}
@@ -300,7 +283,6 @@ function Main() {
         <Header
           workspaceName={currentWs?.title ?? null}
           onMenuToggle={() => setDrawerOpen((o) => !o)}
-          showMenuButton={!isDesktop}
           historyMode={historyMode}
           onToggleHistory={currentSurface && !isBrowserSurface ? () => setHistoryMode((h) => !h) : undefined}
         />
@@ -320,23 +302,19 @@ function Main() {
         />
 
         {isBrowserSurface ? (
-          <BrowserView
-            url={currentSurfaceInfo?.url ?? ''}
-            title={currentSurfaceInfo?.title ?? ''}
-            gestureRef={gestureRef}
-          />
+          <BrowserView url={currentSurfaceInfo?.url ?? ''} title={currentSurfaceInfo?.title ?? ''} />
         ) : (
           <Terminal
             grid={historyMode ? null : termGrid}
             content={termContent}
             fontSize={fontSize}
-            gestureRef={gestureRef}
             mouseEnabled={mouseMode.mouseEnabled}
             useSgr={mouseMode.useSgr}
             onSendMouse={(text) => {
               if (currentSurface)
                 sendText(currentSurface, text).catch((err) => console.error('[app] mouse error:', err))
             }}
+            onAdjustFontSize={adjustFontSize}
           />
         )}
 
@@ -346,8 +324,12 @@ function Main() {
             if (currentSurface) sendText(currentSurface, text).catch((err) => console.error('[app] send error:', err))
           }}
           onSendKey={(key) => {
-            if (currentSurface) sendKey(currentSurface, key).catch((err) => console.error('[app] key error:', err))
+            // cmux の send_key は key 名の解釈に癖があり方向キーが効かないため、実証済みの
+            // send_text 経路で生のエスケープシーケンスを送る（DECCKM で \x1b[/\x1bO を出し分け）。
+            if (currentSurface)
+              sendText(currentSurface, encodeKey(key, appCursor)).catch((err) => console.error('[app] key error:', err))
           }}
+          onAdjustFontSize={adjustFontSize}
         />
 
         <StatusBar
