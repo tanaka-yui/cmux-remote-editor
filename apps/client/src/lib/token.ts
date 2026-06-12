@@ -14,3 +14,11 @@ export function getAuthToken(): string {
 
   return localStorage.getItem(STORAGE_KEY) ?? ''
 }
+
+// Manual fallback for installed PWAs: iOS home-screen apps launch at the
+// manifest start_url and use a storage container separate from Safari, so the
+// ?token= bootstrap never reaches them. The token gate stores the pasted
+// token here, inside the PWA's own container.
+export function saveAuthToken(token: string): void {
+  localStorage.setItem(STORAGE_KEY, token.trim())
+}

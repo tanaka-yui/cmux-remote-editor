@@ -6,8 +6,10 @@ import { InputBar } from './components/InputBar'
 import { StatusBar } from './components/StatusBar'
 import { TabBar } from './components/TabBar'
 import { Terminal } from './components/Terminal'
+import { TokenGate } from './components/TokenGate'
 import { useCmux } from './hooks/useCmux'
 import { useGesture } from './hooks/useGesture'
+import { getAuthToken, saveAuthToken } from './lib/token'
 
 const POLL_INTERVAL = 1000
 const INIT_RETRY_INTERVAL = 3000
@@ -16,6 +18,26 @@ const MAX_FONT_SIZE = 28
 const DEFAULT_FONT_SIZE = 13
 
 export function App() {
+  // iOS home-screen PWAs launch at the manifest start_url and use a storage
+  // container separate from Safari, so the ?token= bootstrap never reaches
+  // them — collect the token in-app when none is available.
+  const [token, setToken] = useState(getAuthToken)
+
+  if (!token) {
+    return (
+      <TokenGate
+        onSubmit={(t) => {
+          saveAuthToken(t)
+          setToken(t)
+        }}
+      />
+    )
+  }
+
+  return <Main />
+}
+
+function Main() {
   const {
     status,
     workspaces,
