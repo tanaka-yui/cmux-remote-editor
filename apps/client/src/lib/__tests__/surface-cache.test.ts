@@ -34,9 +34,9 @@ describe('surface-cache', () => {
     saveSurfaceScreen('surface:1', { text: huge, updatedAt: 1 })
     const loaded = loadSurfaceScreen('surface:1')
     expect(loaded).not.toBeNull()
-    expect(loaded?.text.length).toBeLessThanOrEqual(MAX_CACHED_CHARS)
+    expect(loaded?.text?.length).toBeLessThanOrEqual(MAX_CACHED_CHARS)
     // 末尾（最新行）が保持される
-    expect(loaded?.text.endsWith('x')).toBe(true)
+    expect(loaded?.text?.endsWith('x')).toBe(true)
   })
 
   it('scrollback 未指定で保存すると既存の scrollback を引き継ぐ', () => {

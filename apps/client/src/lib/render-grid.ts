@@ -47,7 +47,7 @@ const ESC = '\x1b'
 // "#RRGGBB" → [r, g, b]。不正値は黒にフォールバックする。
 function hexToRgb(hex: string): [number, number, number] {
   const m = /^#?([0-9a-fA-F]{6})$/.exec(hex)
-  if (!m) return [0, 0, 0]
+  if (!m || m[1] === undefined) return [0, 0, 0]
   const n = Number.parseInt(m[1], 16)
   return [(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff]
 }
