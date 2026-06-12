@@ -24,6 +24,12 @@ body {
   padding-top: env(safe-area-inset-top);
 }
 
+:root {
+  /* Full dynamic viewport minus the top safe-area inset that `body` already
+     pads — keeps the bottom (input bar / status bar) on-screen in iOS PWA. */
+  --app-height: calc(100dvh - env(safe-area-inset-top));
+}
+
 #root {
   height: 100%;
 }
