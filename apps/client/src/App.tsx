@@ -10,6 +10,7 @@ import { Terminal } from './components/Terminal'
 import { TokenGate } from './components/TokenGate'
 import { useCmux } from './hooks/useCmux'
 import { useGesture } from './hooks/useGesture'
+import { loadSurfaceScreen, saveSurfaceScreen } from './lib/surface-cache'
 import { getAuthToken, saveAuthToken } from './lib/token'
 
 const POLL_INTERVAL = 1000
@@ -17,6 +18,8 @@ const INIT_RETRY_INTERVAL = 3000
 const MIN_FONT_SIZE = 9
 const MAX_FONT_SIZE = 28
 const DEFAULT_FONT_SIZE = 13
+// 履歴モードで取得するスクロールバック行数。
+const HISTORY_LINES = 2000
 
 export function App() {
   // iOS home-screen PWAs launch at the manifest start_url and use a storage
@@ -64,6 +67,9 @@ function Main() {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [termContent, setTermContent] = useState('')
   const [fontSize, setFontSize] = useState(DEFAULT_FONT_SIZE)
+  // 履歴(スクロールバック)モードと、表示中内容の取得時刻(オフライン保持の鮮度表示用)。
+  const [historyMode, setHistoryMode] = useState(false)
+  const [lastUpdated, setLastUpdated] = useState<number | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined)
 
   const currentSurfaceInfo = surfaces.find((s) => s.ref === currentSurface)
@@ -99,10 +105,26 @@ function Main() {
     Promise.all([listPanes(currentWorkspace), listSurfaces(currentWorkspace)]).catch(() => {})
   }, [status, currentWorkspace, listPanes, listSurfaces])
 
+  // Surface 切替時はまずキャッシュから即座にハイドレートし、切断/リロード直後でも
+  // 「直前までの履歴」を空白にせず表示する。ライブポーリングが繋がれば上書きされる。
+  // タブを切り替えたら履歴モードはライブへ戻す。
+  useEffect(() => {
+    setHistoryMode(false)
+    if (!currentSurface) {
+      setTermContent('')
+      setLastUpdated(null)
+      return
+    }
+    const cached = loadSurfaceScreen(currentSurface)
+    setTermContent(cached?.text ?? '')
+    setLastUpdated(cached?.updatedAt ?? null)
+  }, [currentSurface])
+
   // Poll terminal content for the selected surface (tab). Browser surfaces are
   // rendered in an iframe instead, so their (base64) read_text is never polled.
+  // History モード中はライブ更新を止め、スクロールバックを固定表示する。
   useEffect(() => {
-    if (status !== 'connected' || !currentSurface || isBrowserSurface) {
+    if (status !== 'connected' || !currentSurface || isBrowserSurface || historyMode) {
       if (pollRef.current) clearInterval(pollRef.current)
       return
     }
@@ -111,6 +133,10 @@ function Main() {
       try {
         const text = await readText(currentSurface)
         setTermContent(text)
+        const now = Date.now()
+        setLastUpdated(now)
+        // オフライン保持用に最後の画面を永続化（既存の scrollback は維持される）。
+        saveSurfaceScreen(currentSurface, { text, updatedAt: now })
       } catch (err) {
         console.error('[app] Poll error:', err)
       }
@@ -119,10 +145,53 @@ function Main() {
     poll()
     pollRef.current = setInterval(poll, POLL_INTERVAL)
 
+    // バックグラウンド復帰時の即時再ポーリング。iPhone 等で PWA がバックグラウンド/
+    // 画面ロックされると setInterval がスロットルされ更新が止まるため、復帰イベントで
+    // 即座に最新を取りに行く。
+    const resume = () => {
+      if (document.visibilityState !== 'hidden') poll()
+    }
+    document.addEventListener('visibilitychange', resume)
+    window.addEventListener('pageshow', resume)
+    window.addEventListener('focus', resume)
+
     return () => {
       if (pollRef.current) clearInterval(pollRef.current)
+      document.removeEventListener('visibilitychange', resume)
+      window.removeEventListener('pageshow', resume)
+      window.removeEventListener('focus', resume)
     }
-  }, [status, currentSurface, isBrowserSurface, readText])
+  }, [status, currentSurface, isBrowserSurface, historyMode, readText])
+
+  // 履歴モード: スクロールバックを 1 回取得して固定表示。取得分はオフライン閲覧用に
+  // キャッシュする。切断中は取得済みキャッシュ(scrollback→text)へフォールバックする。
+  useEffect(() => {
+    if (!historyMode || !currentSurface) return
+
+    if (status !== 'connected') {
+      const cached = loadSurfaceScreen(currentSurface)
+      if (cached) {
+        setTermContent(cached.scrollback ?? cached.text)
+        setLastUpdated(cached.updatedAt)
+      }
+      return
+    }
+
+    let cancelled = false
+    readText(currentSurface, { scrollback: true, lines: HISTORY_LINES })
+      .then((text) => {
+        if (cancelled) return
+        setTermContent(text)
+        const now = Date.now()
+        setLastUpdated(now)
+        saveSurfaceScreen(currentSurface, { text, scrollback: text, updatedAt: now })
+      })
+      .catch((err) => console.error('[app] History fetch error:', err))
+
+    return () => {
+      cancelled = true
+    }
+  }, [historyMode, currentSurface, status, readText])
 
   // Gesture handlers: vertical = workspaces, horizontal = tabs, pinch = font size
   const onSwipeUp = useCallback(() => {
@@ -204,6 +273,8 @@ function Main() {
           workspaceName={currentWs?.title ?? null}
           onMenuToggle={() => setDrawerOpen((o) => !o)}
           showMenuButton={!isDesktop}
+          historyMode={historyMode}
+          onToggleHistory={currentSurface && !isBrowserSurface ? () => setHistoryMode((h) => !h) : undefined}
         />
 
         <TabBar
@@ -245,6 +316,8 @@ function Main() {
           paneName={currentSurfaceInfo?.title ?? currentSurface}
           paneIndex={surfaces.findIndex((s) => s.ref === currentSurface)}
           paneCount={surfaces.length}
+          lastUpdated={lastUpdated}
+          historyMode={historyMode}
         />
       </div>
     </div>

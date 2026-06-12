@@ -2,9 +2,18 @@ interface HeaderProps {
   workspaceName: string | null
   onMenuToggle: () => void
   showMenuButton?: boolean
+  // 履歴(スクロールバック)モードのトグル。undefined のときボタンを出さない（例: ブラウザサーフェス）。
+  historyMode?: boolean
+  onToggleHistory?: () => void
 }
 
-export function Header({ workspaceName, onMenuToggle, showMenuButton = true }: HeaderProps) {
+export function Header({
+  workspaceName,
+  onMenuToggle,
+  showMenuButton = true,
+  historyMode,
+  onToggleHistory,
+}: HeaderProps) {
   return (
     <header
       style={{
@@ -48,6 +57,28 @@ export function Header({ workspaceName, onMenuToggle, showMenuButton = true }: H
       >
         {workspaceName ?? 'cmux Remote'}
       </span>
+      {onToggleHistory && (
+        <button
+          type="button"
+          onClick={onToggleHistory}
+          aria-label="Toggle history"
+          aria-pressed={historyMode}
+          style={{
+            marginLeft: 'auto',
+            flexShrink: 0,
+            background: historyMode ? '#4caf50' : 'none',
+            border: '1px solid #2a2a4e',
+            borderRadius: 6,
+            color: historyMode ? '#16213e' : '#aaa',
+            fontSize: 13,
+            padding: '4px 10px',
+            cursor: 'pointer',
+            lineHeight: 1,
+          }}
+        >
+          履歴
+        </button>
+      )}
     </header>
   )
 }

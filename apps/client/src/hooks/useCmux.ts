@@ -165,9 +165,12 @@ export function useCmux() {
   )
 
   const readText = useCallback(
-    async (surfaceRef?: string): Promise<string> => {
+    async (surfaceRef?: string, opts?: { scrollback?: boolean; lines?: number }): Promise<string> => {
       const params: Record<string, unknown> = {}
       if (surfaceRef) params.surface_ref = surfaceRef
+      // scrollback/lines は ws.ts が surface.read_text を素通しするためサーバー変更なしで cmux に届く。
+      if (opts?.scrollback) params.scrollback = true
+      if (opts?.lines !== undefined) params.lines = opts.lines
       const result = (await rpc('surface.read_text', params)) as { text: string }
       return result.text ?? ''
     },

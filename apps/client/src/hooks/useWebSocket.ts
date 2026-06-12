@@ -87,5 +87,30 @@ export function useWebSocket({ url, onMessage, maxRetries = DEFAULT_MAX_RETRIES 
     }
   }, [connect, clearRetryTimer])
 
+  // フォアグラウンド復帰時の即時再接続。iPhone 等で PWA がバックグラウンド/画面ロック
+  // されると WS が切断され、指数バックオフだけでは復帰が遅い・maxRetries 到達後は二度と
+  // 繋ぎ直さない。可視化/復帰イベントでバックオフをリセットして即座に connect する。
+  useEffect(() => {
+    const resume = () => {
+      if (unmountedRef.current) return
+      if (document.visibilityState === 'hidden') return
+      if (wsRef.current?.readyState === WebSocket.OPEN) return
+      retryRef.current = 0
+      clearRetryTimer()
+      connect()
+    }
+
+    document.addEventListener('visibilitychange', resume)
+    window.addEventListener('pageshow', resume)
+    window.addEventListener('focus', resume)
+    window.addEventListener('online', resume)
+    return () => {
+      document.removeEventListener('visibilitychange', resume)
+      window.removeEventListener('pageshow', resume)
+      window.removeEventListener('focus', resume)
+      window.removeEventListener('online', resume)
+    }
+  }, [connect, clearRetryTimer])
+
   return { status, send }
 }

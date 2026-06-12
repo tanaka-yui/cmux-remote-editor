@@ -5,6 +5,16 @@ interface StatusBarProps {
   paneName: string | null
   paneIndex: number
   paneCount: number
+  // 表示中の内容が取得された時刻(epoch ms)。切断/履歴モード時に「いつの内容か」を示す。
+  lastUpdated?: number | null
+  historyMode?: boolean
+}
+
+function formatClock(epochMs: number): string {
+  const d = new Date(epochMs)
+  const hh = String(d.getHours()).padStart(2, '0')
+  const mm = String(d.getMinutes()).padStart(2, '0')
+  return `${hh}:${mm}`
 }
 
 const DOT_BASE_STYLE = { width: 6, height: 6, borderRadius: '50%', display: 'inline-block' as const }
@@ -15,8 +25,16 @@ const STATUS_CONFIG: Record<ConnectionStatus, { label: string; color: string }> 
   disconnected: { label: 'Disconnected', color: '#f44336' },
 }
 
-export function StatusBar({ status, paneName, paneIndex, paneCount }: StatusBarProps) {
+export function StatusBar({ status, paneName, paneIndex, paneCount, lastUpdated, historyMode }: StatusBarProps) {
   const config = STATUS_CONFIG[status]
+
+  // 切断中（オフライン保持）や履歴モードでは、表示内容がいつ時点のものかを明示する。
+  let notice: string | null = null
+  if (historyMode) {
+    notice = lastUpdated ? `履歴 · ${formatClock(lastUpdated)}時点` : '履歴'
+  } else if (status !== 'connected' && lastUpdated) {
+    notice = `オフライン · 最終 ${formatClock(lastUpdated)}`
+  }
 
   return (
     <footer
@@ -46,6 +64,7 @@ export function StatusBar({ status, paneName, paneIndex, paneCount }: StatusBarP
         )}
       </span>
       <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        {notice && <span style={{ color: historyMode ? '#4caf50' : '#ff9800' }}>{notice}</span>}
         <span
           style={{
             width: 8,
