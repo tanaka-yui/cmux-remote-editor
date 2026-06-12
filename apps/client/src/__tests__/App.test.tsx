@@ -43,6 +43,7 @@ beforeEach(() => {
     closeSurface: vi.fn(() => Promise.resolve([])),
     focusSurface: vi.fn(),
     readText: vi.fn(() => Promise.resolve('')),
+    readGrid: vi.fn(() => Promise.resolve({ columns: 80, rows: 24, styles: [], row_spans: [] })),
     sendText: vi.fn(() => Promise.resolve()),
     sendKey: vi.fn(() => Promise.resolve()),
     listNotifications: vi.fn(() => Promise.resolve([])),

@@ -34,9 +34,9 @@ describe('surface-cache', () => {
     saveSurfaceScreen('surface:1', { text: huge, updatedAt: 1 })
     const loaded = loadSurfaceScreen('surface:1')
     expect(loaded).not.toBeNull()
-    expect(loaded?.text.length).toBeLessThanOrEqual(MAX_CACHED_CHARS)
+    expect(loaded?.text?.length).toBeLessThanOrEqual(MAX_CACHED_CHARS)
     // 末尾（最新行）が保持される
-    expect(loaded?.text.endsWith('x')).toBe(true)
+    expect(loaded?.text?.endsWith('x')).toBe(true)
   })
 
   it('scrollback 未指定で保存すると既存の scrollback を引き継ぐ', () => {
@@ -45,6 +45,23 @@ describe('surface-cache', () => {
     const loaded = loadSurfaceScreen('surface:1')
     expect(loaded?.text).toBe('live2')
     expect(loaded?.scrollback).toBe('deep history')
+    expect(loaded?.updatedAt).toBe(2)
+  })
+
+  it('grid を保存・読み戻しできる', () => {
+    const grid = { columns: 2, rows: 1, styles: [], row_spans: [] }
+    saveSurfaceScreen('surface:1', { grid, updatedAt: 5 })
+    expect(loadSurfaceScreen('surface:1')?.grid).toEqual(grid)
+  })
+
+  it('text 未指定の保存は既存の text/scrollback を引き継ぐ（grid だけ更新）', () => {
+    saveSurfaceScreen('surface:1', { text: 'old', scrollback: 'hist', updatedAt: 1 })
+    const grid = { columns: 1, rows: 1, styles: [], row_spans: [] }
+    saveSurfaceScreen('surface:1', { grid, updatedAt: 2 })
+    const loaded = loadSurfaceScreen('surface:1')
+    expect(loaded?.text).toBe('old')
+    expect(loaded?.scrollback).toBe('hist')
+    expect(loaded?.grid).toEqual(grid)
     expect(loaded?.updatedAt).toBe(2)
   })
 

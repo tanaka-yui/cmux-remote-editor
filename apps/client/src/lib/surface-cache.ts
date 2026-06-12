@@ -3,14 +3,18 @@
 // スクロールバックをサーフェスごとに localStorage へ保存し、オフライン/復帰時に
 // 「直前までの履歴」を読み取り専用で表示できるようにする。IndexedDB ではなく
 // localStorage を使うのは、数百KB に収まり jsdom で追加依存なく単体テストできるため。
+import type { RenderGrid } from './render-grid'
+
 const KEY_PREFIX = 'cmux-surface-cache:'
 
 // 1 サーフェスあたりの保存上限（文字数）。超過分は末尾（最新行）を残して切り詰める。
 export const MAX_CACHED_CHARS = 200_000
 
 export interface CachedScreen {
-  text: string
+  text?: string
   scrollback?: string
+  // ライブ描画のオフライン表示用に最後の render_grid を保持する。
+  grid?: RenderGrid
   updatedAt: number
 }
 
@@ -26,14 +30,19 @@ function clampTail(value: string): string {
 export function saveSurfaceScreen(surfaceRef: string, screen: CachedScreen): void {
   if (typeof window === 'undefined') return
 
-  const clamped: CachedScreen = {
-    text: clampTail(screen.text),
-    updatedAt: screen.updatedAt,
-  }
-  // ライブポーリングは可視画面のみ保存し scrollback を渡さない。直近に取得済みの
-  // scrollback をオフライン閲覧用に維持するため、未指定時は既存値を引き継ぐ。
-  const scrollback = screen.scrollback ?? loadSurfaceScreen(surfaceRef)?.scrollback
+  // 未指定のフィールドは既存値を引き継ぐ（ライブ poll は grid のみ、履歴 fetch は
+  // scrollback のみ、を渡すため）。これで text/scrollback/grid が互いを潰さない。
+  const prev = loadSurfaceScreen(surfaceRef)
+  const clamped: CachedScreen = { updatedAt: screen.updatedAt }
+
+  const text = screen.text ?? prev?.text
+  if (text !== undefined) clamped.text = clampTail(text)
+
+  const scrollback = screen.scrollback ?? prev?.scrollback
   if (scrollback !== undefined) clamped.scrollback = clampTail(scrollback)
+
+  const grid = screen.grid ?? prev?.grid
+  if (grid !== undefined) clamped.grid = grid
 
   try {
     localStorage.setItem(keyFor(surfaceRef), JSON.stringify(clamped))
@@ -50,7 +59,7 @@ export function loadSurfaceScreen(surfaceRef: string): CachedScreen | null {
 
   try {
     const parsed = JSON.parse(raw) as CachedScreen
-    if (typeof parsed.text !== 'string' || typeof parsed.updatedAt !== 'number') return null
+    if (typeof parsed.updatedAt !== 'number') return null
     return parsed
   } catch {
     return null
