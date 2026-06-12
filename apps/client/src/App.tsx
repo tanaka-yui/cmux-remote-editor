@@ -228,14 +228,14 @@ function Main() {
   // While the terminal reports mouse input (nvim etc.), tab-switch swipes are
   // suppressed so the Terminal can use vertical swipes as wheel scroll.
   const onSwipeLeft = useCallback(() => {
-    if (mouseMode.mouseEnabled) return
+    if (mouseMode.mouseEnabled && mouseMode.useSgr) return
     navigateSurface('next')
-  }, [navigateSurface, mouseMode.mouseEnabled])
+  }, [navigateSurface, mouseMode.mouseEnabled, mouseMode.useSgr])
 
   const onSwipeRight = useCallback(() => {
-    if (mouseMode.mouseEnabled) return
+    if (mouseMode.mouseEnabled && mouseMode.useSgr) return
     navigateSurface('prev')
-  }, [navigateSurface, mouseMode.mouseEnabled])
+  }, [navigateSurface, mouseMode.mouseEnabled, mouseMode.useSgr])
 
   const onPinchIn = useCallback(() => {
     setFontSize((s) => Math.max(MIN_FONT_SIZE, s - 1))

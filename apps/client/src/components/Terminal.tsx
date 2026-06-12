@@ -112,6 +112,10 @@ export function Terminal({ grid, content, fontSize, gestureRef, mouseEnabled, us
     [mouseActive, grid, useSgr, onSendMouse],
   )
 
+  const onTouchCancel = useCallback(() => {
+    touchStartRef.current = null
+  }, [])
+
   const wrapperStyle: CSSProperties = {
     flex: 1,
     minHeight: 0,
@@ -141,6 +145,7 @@ export function Terminal({ grid, content, fontSize, gestureRef, mouseEnabled, us
       style={wrapperStyle}
       onTouchStart={onTouchStart}
       onTouchEnd={onTouchEnd}
+      onTouchCancel={onTouchCancel}
     >
       <WTerminal
         ref={ref}

@@ -1,5 +1,7 @@
 // フェーズ1の閾値（px）。実機で調整する（plan Task 9）。
 export const TAP_MAX_DISTANCE = 10
+// 注: TAP_MAX_DISTANCE と WHEEL_MIN_DISTANCE の間（10〜16px）の純粋な縦移動は none になる
+// （dead zone）。実機調整（plan Task 9）で WHEEL_MIN_DISTANCE を詰めると解消できる。
 export const WHEEL_MIN_DISTANCE = 16
 export const WHEEL_STEP_PX = 24
 export const WHEEL_MAX_COUNT = 10

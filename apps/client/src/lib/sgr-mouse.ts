@@ -1,7 +1,7 @@
 export type MouseButton = 'left' | 'wheelUp' | 'wheelDown'
 export type MouseAction = 'press' | 'release'
 
-export interface MouseEvent {
+export interface CmuxMouseEvent {
   button: MouseButton
   action: MouseAction
   // 1-based のセル座標。
@@ -16,7 +16,7 @@ const BUTTON_CODE: Record<MouseButton, number> = {
 }
 
 // SGR 拡張マウス（DECSET 1006）の 1 イベント。press は 'M'、release は 'm'。
-export function encodeMouse(ev: MouseEvent): string {
+export function encodeMouse(ev: CmuxMouseEvent): string {
   const code = BUTTON_CODE[ev.button]
   const final = ev.action === 'press' ? 'M' : 'm'
   return `\x1b[<${code};${ev.col};${ev.row}${final}`
