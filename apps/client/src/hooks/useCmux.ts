@@ -188,6 +188,26 @@ export function useCmux() {
     [rpc, listSurfaces],
   )
 
+  const closeWorkspace = useCallback(
+    async (workspaceRef: string) => {
+      // cmux ソケットの workspace.close は `workspace_id` を読む（`workspace_ref` は無視）。
+      // 値は workspace.select と同じく短縮 ref を受理する（実機プローブで確認）。
+      await rpc('workspace.close', { workspace_id: workspaceRef })
+      // 現在のワークスペースを閉じた場合、フォールバックが確定するまで旧 WS のタブ・
+      // ターミナル内容が残らないよう即座にクリアする（selectWorkspace と同じ理由）。
+      if (workspaceRef === currentWorkspace) {
+        setSurfaces([])
+        setCurrentSurface(null)
+        setPanes([])
+        setCurrentPane(null)
+      }
+      // listWorkspaces → resolveSelectedRef が、閉じた WS が現在だった場合は cmux が
+      // auto-select した別 WS（無ければ先頭）へ、非現在なら現在維持でフォールバックする。
+      return listWorkspaces()
+    },
+    [rpc, listWorkspaces, currentWorkspace],
+  )
+
   const readText = useCallback(
     async (surfaceRef?: string, opts?: { scrollback?: boolean; lines?: number }): Promise<string> => {
       const params: Record<string, unknown> = {}
@@ -278,6 +298,7 @@ export function useCmux() {
     listSurfaces,
     createSurface,
     closeSurface,
+    closeWorkspace,
     focusSurface,
     readText,
     sendText,

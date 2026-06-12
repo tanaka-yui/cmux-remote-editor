@@ -170,3 +170,91 @@ describe('useCmux selectWorkspace', () => {
     expect(selectReq?.params).toEqual({ workspace_id: 'workspace:B' })
   })
 })
+
+describe('useCmux closeWorkspace', () => {
+  const findReq = (method: string) =>
+    hoisted.sent
+      .map((raw) => JSON.parse(raw) as { method: string; params: Record<string, unknown> })
+      .find((req) => req.method === method)
+
+  it('workspace.close を workspace_id パラメータで送る（ref ではなく id キー）', async () => {
+    const { result } = renderHook(() => useCmux())
+    await act(async () => {
+      await result.current.closeWorkspace('workspace:B')
+    })
+    const req = findReq('workspace.close')
+    expect(req).toBeDefined()
+    expect(req?.params).toEqual({ workspace_id: 'workspace:B' })
+    expect(req?.params).not.toHaveProperty('workspace_ref')
+  })
+
+  it('現在のワークスペースを閉じると、残りの selected ワークスペースへフォールバックする', async () => {
+    hoisted.responses['workspace.list'] = {
+      workspaces: [
+        { id: 'w1', ref: 'workspace:A', title: 'A', index: 0, selected: true },
+        { id: 'w2', ref: 'workspace:B', title: 'B', index: 1 },
+      ],
+    }
+    const { result } = renderHook(() => useCmux())
+    await act(async () => {
+      await result.current.listWorkspaces()
+    })
+    expect(result.current.currentWorkspace).toBe('workspace:A')
+
+    // A を閉じた後の workspace.list は B のみ（cmux が B を selected にする）。
+    hoisted.responses['workspace.list'] = {
+      workspaces: [{ id: 'w2', ref: 'workspace:B', title: 'B', index: 1, selected: true }],
+    }
+    await act(async () => {
+      await result.current.closeWorkspace('workspace:A')
+    })
+    expect(result.current.currentWorkspace).toBe('workspace:B')
+  })
+
+  it('非現在のワークスペースを閉じても currentWorkspace は維持される', async () => {
+    hoisted.responses['workspace.list'] = {
+      workspaces: [
+        { id: 'w1', ref: 'workspace:A', title: 'A', index: 0, selected: true },
+        { id: 'w2', ref: 'workspace:B', title: 'B', index: 1 },
+      ],
+    }
+    const { result } = renderHook(() => useCmux())
+    await act(async () => {
+      await result.current.listWorkspaces()
+    })
+    expect(result.current.currentWorkspace).toBe('workspace:A')
+
+    // B を閉じた後の list は A のみ（A は selected 維持）。
+    hoisted.responses['workspace.list'] = {
+      workspaces: [{ id: 'w1', ref: 'workspace:A', title: 'A', index: 0, selected: true }],
+    }
+    await act(async () => {
+      await result.current.closeWorkspace('workspace:B')
+    })
+    expect(result.current.currentWorkspace).toBe('workspace:A')
+  })
+
+  it('現在のワークスペースを閉じると surfaces/currentSurface をクリアする', async () => {
+    hoisted.responses['workspace.list'] = {
+      workspaces: [{ id: 'w1', ref: 'workspace:A', title: 'A', index: 0, selected: true }],
+    }
+    hoisted.responses['surface.list'] = {
+      surfaces: [{ index: 0, ref: 'surface:a1', selected: true, title: 'a1', type: 'terminal' }],
+    }
+    const { result } = renderHook(() => useCmux())
+    await act(async () => {
+      await result.current.listWorkspaces()
+      await result.current.listSurfaces('workspace:A')
+    })
+    expect(result.current.surfaces).toHaveLength(1)
+    expect(result.current.currentSurface).toBe('surface:a1')
+
+    // A を閉じた後の list は空（最後の WS）。
+    hoisted.responses['workspace.list'] = { workspaces: [] }
+    await act(async () => {
+      await result.current.closeWorkspace('workspace:A')
+    })
+    expect(result.current.surfaces).toEqual([])
+    expect(result.current.currentSurface).toBeNull()
+  })
+})
