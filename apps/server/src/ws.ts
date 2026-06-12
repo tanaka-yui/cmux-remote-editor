@@ -6,6 +6,8 @@ interface TreeSurface {
   selected?: boolean
   title?: string
   type?: string
+  // Populated for browser surfaces (null for terminals); the PWA renders it in an iframe.
+  url?: string | null
 }
 
 interface TreePane {
@@ -33,6 +35,8 @@ export interface FlatSurface {
   title: string
   type: string
   pane_ref: string
+  // null for terminals; the browser surface's current URL otherwise.
+  url: string | null
 }
 
 // Walk the cmux tree and flatten every surface across all panes of the target
@@ -51,6 +55,7 @@ export function flattenSurfaces(tree: CmuxTree, workspaceRef?: string): FlatSurf
             title: surface.title ?? surface.ref,
             type: surface.type ?? 'terminal',
             pane_ref: pane.ref,
+            url: surface.url ?? null,
           })
         }
       }

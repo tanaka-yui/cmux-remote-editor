@@ -77,4 +77,30 @@ describe('flattenSurfaces', () => {
     expect(result.map((s) => s.ref)).toEqual(['surface:99'])
     expect(result[0].selected).toBe(false)
   })
+
+  it('ブラウザサーフェスの url を保持し、ターミナルは url:null にする', () => {
+    const browserTree = {
+      windows: [
+        {
+          workspaces: [
+            {
+              ref: 'workspace:6',
+              panes: [
+                {
+                  ref: 'pane:8',
+                  surfaces: [
+                    { ref: 'surface:1', title: 'shell', type: 'terminal' },
+                    { ref: 'surface:2', title: 'Example Domain', type: 'browser', url: 'https://example.com/' },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    }
+    const result = flattenSurfaces(browserTree, 'workspace:6')
+    expect(result.map((s) => s.url)).toEqual([null, 'https://example.com/'])
+    expect(result[1].type).toBe('browser')
+  })
 })
