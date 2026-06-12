@@ -1,6 +1,5 @@
-import { CmuxClient } from '../cmux-client'
-
 import { describe, expect, it } from 'bun:test'
+import { CmuxClient } from '../cmux-client'
 
 describe('CmuxClient', () => {
   it('デフォルトで未接続状態である', () => {

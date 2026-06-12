@@ -10,6 +10,7 @@ import { useCmux } from './hooks/useCmux'
 import { useGesture } from './hooks/useGesture'
 
 const POLL_INTERVAL = 1000
+const INIT_RETRY_INTERVAL = 3000
 const MIN_FONT_SIZE = 9
 const MAX_FONT_SIZE = 28
 const DEFAULT_FONT_SIZE = 13
@@ -42,13 +43,28 @@ export function App() {
   const [fontSize, setFontSize] = useState(DEFAULT_FONT_SIZE)
   const pollRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined)
 
-  // Initial data fetch
+  // Initial data fetch. Retried on failure: a transient cmux outage right
+  // after connecting would otherwise leave the app blank until a manual reload.
   useEffect(() => {
     if (status !== 'connected') return
 
-    listWorkspaces()
-      .then(() => Promise.all([listPanes(), listSurfaces(), listNotifications()]))
-      .catch((err) => console.error('[app] Init error:', err))
+    let cancelled = false
+    let retryTimer: ReturnType<typeof setTimeout> | undefined
+
+    const init = () => {
+      listWorkspaces()
+        .then(() => Promise.all([listPanes(), listSurfaces(), listNotifications()]))
+        .catch((err) => {
+          console.error('[app] Init error:', err)
+          if (!cancelled) retryTimer = setTimeout(init, INIT_RETRY_INTERVAL)
+        })
+    }
+    init()
+
+    return () => {
+      cancelled = true
+      if (retryTimer) clearTimeout(retryTimer)
+    }
   }, [status, listWorkspaces, listPanes, listSurfaces, listNotifications])
 
   // Re-fetch panes and surfaces when workspace changes

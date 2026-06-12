@@ -100,13 +100,7 @@ export function InputBar({ disabled, onSendText, onSendKey }: InputBarProps) {
       </div>
       <div style={{ display: 'flex', gap: 6, overflowX: 'auto' }}>
         {SPECIAL_KEYS.map((k) => (
-          <button
-            key={k.key}
-            type="button"
-            disabled={disabled}
-            onClick={() => onSendKey(k.key)}
-            style={keyButtonStyle}
-          >
+          <button key={k.key} type="button" disabled={disabled} onClick={() => onSendKey(k.key)} style={keyButtonStyle}>
             {k.label}
           </button>
         ))}

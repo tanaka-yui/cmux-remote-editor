@@ -72,7 +72,9 @@ pnpm start    # サーバーをホスト常駐起動 + クライアントを Doc
 pnpm stop     # 両方停止
 ```
 
-起動後、ブラウザ/iPhone から **http://<ホスト>:48700** を開きます（Safari なら「ホーム画面に追加」で PWA 化）。
+起動後、ブラウザ/iPhone から **http://<ホスト>:48700/?token=<認証トークン>** を開きます（Safari なら「ホーム画面に追加」で PWA 化）。
+
+> **認証トークン**: ブリッジサーバーは LAN から到達可能かつ cmux が `allowAll` のため、WebSocket 接続に共有トークンを必須としています。トークンは初回起動時に自動生成され `apps/server/.run/token` に保存されます（`pnpm start` の完了メッセージにトークン付き URL が表示されます。`pnpm server:logs` でも確認可）。一度 `?token=...` 付きで開けばブラウザに保存されるので、以降は素の URL でアクセスできます。トークンを固定したい場合は環境変数 `CMUX_REMOTE_TOKEN` を設定するか、`apps/server/.env` に `CMUX_REMOTE_TOKEN=...` を書いてください（Bun が起動時に自動読込。ファイルが無ければ自動生成にフォールバック）。
 
 ### サーバー単体の管理
 
@@ -91,7 +93,7 @@ pnpm install
 pnpm dev      # turbo: サーバー(bun --watch) + クライアント(vite) を同時起動
 ```
 
-Vite 開発サーバーが `/ws`・`/health` を `localhost:48701` にプロキシします。開発時はサーバーが cmux 端末の子プロセスとして動くため、cmux のモードは `cmuxOnly` のままでも接続できます。
+Vite 開発サーバーが `/ws`・`/health` を `localhost:48701` にプロキシします。開発時はサーバーが cmux 端末の子プロセスとして動くため、cmux のモードは `cmuxOnly` のままでも接続できます。開発時も認証トークンは必要です — 初回のみ `http://localhost:5173/?token=<認証トークン>` で開いてください（トークンはサーバー起動ログに表示されます）。
 
 ### テスト / 静的解析
 
@@ -107,6 +109,7 @@ pnpm lint        # biome lint
 |---|---|---|
 | `PORT` | `48701` | ブリッジサーバーのポート |
 | `CMUX_SOCKET_PATH` | ポインタファイルから自動解決（既定 `~/.local/state/cmux/cmux.sock`） | cmux Unix ソケットのパス |
+| `CMUX_REMOTE_TOKEN` | 初回起動時に自動生成（`apps/server/.run/token` に永続化） | WebSocket 接続の共有認証トークン。`apps/server/.env` でも設定可（Bun が自動読込） |
 
 ソケットパスは `CMUX_SOCKET_PATH` → `~/.local/state/cmux/last-socket-path` / `~/Library/Application Support/cmux/last-socket-path` のポインタファイル → 既定パス、の順で解決されます。
 
@@ -127,6 +130,7 @@ apps/
   server/                 # Bun + Hono ブリッジサーバー
     src/
       index.ts            # エントリ（HTTP/WS/静的配信）
+      auth.ts             # WS 共有トークン認証（生成・永続化・検証）
       ws.ts               # WebSocket ⇄ cmux UDS 中継（surface.list は system.tree から整形）
       cmux-client.ts      # cmux UDS クライアント（ヘルスチェック用）
       socket-path.ts      # ソケットパス解決

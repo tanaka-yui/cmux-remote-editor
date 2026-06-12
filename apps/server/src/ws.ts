@@ -108,7 +108,7 @@ interface CmuxResponseLine {
   result?: CmuxTree
 }
 
-interface WSData {
+export interface WSData {
   socket: WebSocket | null
   ready: boolean
   messageBuffer: string[]
@@ -181,6 +181,12 @@ function connectCmuxSocket(ws: ServerWebSocket<WSData>) {
 
   sock.on('close', () => {
     console.log('[cmux-socket] Closed')
+    // Propagate the loss to the browser: closing the WS triggers the client's
+    // reconnect/backoff instead of leaving a "Connected" UI whose RPCs all
+    // time out (and the pre-connect messageBuffer from growing unbounded).
+    try {
+      ws.close(1011, 'cmux socket closed')
+    } catch {}
   })
 
   sock.connect(socketPath, () => {

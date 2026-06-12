@@ -1,6 +1,5 @@
-import { health } from '../health'
-
 import { describe, expect, it } from 'bun:test'
+import { health } from '../health'
 
 describe('Health endpoint', () => {
   it('/health にGETリクエストでステータスを返す', async () => {

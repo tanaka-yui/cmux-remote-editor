@@ -1,9 +1,8 @@
-import { resolveCmuxSocketPath } from '../socket-path'
-
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { resolveCmuxSocketPath } from '../socket-path'
 
 describe('resolveCmuxSocketPath', () => {
   const tmpDirs: string[] = []

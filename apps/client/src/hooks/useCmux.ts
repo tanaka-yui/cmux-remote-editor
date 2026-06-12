@@ -8,6 +8,7 @@ import {
   type Surface,
   type Workspace,
 } from '../lib/cmux-rpc'
+import { getAuthToken } from '../lib/token'
 import { type ConnectionStatus, useWebSocket } from './useWebSocket'
 
 interface PendingRequest {
@@ -35,8 +36,8 @@ export function useCmux() {
       if (pending) {
         clearTimeout(pending.timer)
         pendingRef.current.delete(resp.id)
-        if (resp.error) {
-          pending.reject(new Error(resp.error.message))
+        if (resp.error || resp.ok === false) {
+          pending.reject(new Error(resp.error?.message ?? 'RPC failed (ok=false)'))
         } else {
           pending.resolve(resp.result)
         }
@@ -48,7 +49,7 @@ export function useCmux() {
 
   const wsUrl =
     typeof window !== 'undefined'
-      ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`
+      ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws?token=${encodeURIComponent(getAuthToken())}`
       : 'ws://localhost:48701/ws'
 
   const { status, send } = useWebSocket({
@@ -115,8 +116,14 @@ export function useCmux() {
       const result = (await rpc('surface.list', params)) as { surfaces?: Surface[] }
       const list = result.surfaces ?? []
       setSurfaces(list)
-      const active = list.find((s) => s.selected)
-      if (active) setCurrentSurface(active.ref)
+      setCurrentSurface((prev) => {
+        const active = list.find((s) => s.selected)
+        if (active) return active.ref
+        // Keep the user's selection if it still exists; otherwise fall back to
+        // the first tab so a closed surface is never polled forever.
+        if (prev && list.some((s) => s.ref === prev)) return prev
+        return list[0]?.ref ?? null
+      })
       return list
     },
     [rpc],
@@ -202,8 +209,7 @@ export function useCmux() {
     async (direction: 'next' | 'prev') => {
       if (surfaces.length === 0) return
       const idx = surfaces.findIndex((s) => s.ref === currentSurface)
-      const nextIdx =
-        direction === 'next' ? (idx + 1) % surfaces.length : (idx - 1 + surfaces.length) % surfaces.length
+      const nextIdx = direction === 'next' ? (idx + 1) % surfaces.length : (idx - 1 + surfaces.length) % surfaces.length
       const target = surfaces[nextIdx]
       if (target) await focusSurface(target.ref)
     },

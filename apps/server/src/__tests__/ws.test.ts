@@ -1,6 +1,5 @@
-import { flattenSurfaces, rewriteRequest } from '../ws'
-
 import { describe, expect, it } from 'bun:test'
+import { flattenSurfaces, rewriteRequest } from '../ws'
 
 describe('rewriteRequest', () => {
   it('surface.list は system.tree へ書き換え、workspace_ref を保持する', () => {
