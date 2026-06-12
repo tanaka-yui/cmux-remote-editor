@@ -1,0 +1,94 @@
+// cmux ソケットの terminal.replay が返す描画グリッド（format "cmux.render-grid.v1"）を
+// ANSI シーケンスへ変換する。surface.read_text のプレーンテキストと違い、色・属性・
+// カーソル・グリッド位置を保持できるため、@wterm に書き込めば TUI を忠実に描画できる。
+
+export interface RenderStyle {
+  id: number
+  foreground: string
+  background: string
+  bold: boolean
+  faint: boolean
+  italic: boolean
+  underline: boolean
+  blink: boolean
+  inverse: boolean
+  strikethrough: boolean
+  overline: boolean
+  invisible: boolean
+}
+
+export interface RowSpan {
+  row: number
+  column: number
+  style_id: number
+  cell_width: number
+  text: string
+}
+
+export interface GridCursor {
+  row: number
+  column: number
+  visible: boolean
+  style?: string
+  blinking?: boolean
+}
+
+export interface RenderGrid {
+  columns: number
+  rows: number
+  styles: RenderStyle[]
+  row_spans: RowSpan[]
+  cursor?: GridCursor
+  active_screen?: string
+}
+
+const ESC = '\x1b'
+
+// "#RRGGBB" → [r, g, b]。不正値は黒にフォールバックする。
+function hexToRgb(hex: string): [number, number, number] {
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(hex)
+  if (!m) return [0, 0, 0]
+  const n = Number.parseInt(m[1], 16)
+  return [(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff]
+}
+
+// 1 span 分の SGR（必ず先頭で 0 リセットしてから属性を積む）。
+function sgrFor(style: RenderStyle | undefined): string {
+  const codes: number[] = [0]
+  if (style) {
+    if (style.bold) codes.push(1)
+    if (style.faint) codes.push(2)
+    if (style.italic) codes.push(3)
+    if (style.underline) codes.push(4)
+    if (style.blink) codes.push(5)
+    if (style.inverse) codes.push(7)
+    if (style.invisible) codes.push(8)
+    if (style.strikethrough) codes.push(9)
+    if (style.overline) codes.push(53)
+    const [fr, fg, fb] = hexToRgb(style.foreground)
+    codes.push(38, 2, fr, fg, fb)
+    const [br, bg, bb] = hexToRgb(style.background)
+    codes.push(48, 2, br, bg, bb)
+  }
+  return `${ESC}[${codes.join(';')}m`
+}
+
+export function renderGridToAnsi(grid: RenderGrid): string {
+  const styleById = new Map<number, RenderStyle>()
+  for (const s of grid.styles) styleById.set(s.id, s)
+
+  const parts: string[] = [`${ESC}[2J${ESC}[H`]
+  for (const span of grid.row_spans) {
+    parts.push(`${ESC}[${span.row + 1};${span.column + 1}H`)
+    parts.push(sgrFor(styleById.get(span.style_id)))
+    parts.push(span.text)
+  }
+  parts.push(`${ESC}[0m`)
+
+  const cur = grid.cursor
+  if (cur) {
+    parts.push(`${ESC}[${cur.row + 1};${cur.column + 1}H`)
+    parts.push(cur.visible ? `${ESC}[?25h` : `${ESC}[?25l`)
+  }
+  return parts.join('')
+}
