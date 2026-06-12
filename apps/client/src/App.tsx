@@ -10,6 +10,7 @@ import { Terminal } from './components/Terminal'
 import { TokenGate } from './components/TokenGate'
 import { useCmux } from './hooks/useCmux'
 import { useGesture } from './hooks/useGesture'
+import type { RenderGrid } from './lib/render-grid'
 import { loadSurfaceScreen, saveSurfaceScreen } from './lib/surface-cache'
 import { getAuthToken, saveAuthToken } from './lib/token'
 
@@ -57,6 +58,7 @@ function Main() {
     closeSurface,
     focusSurface,
     readText,
+    readGrid,
     sendText,
     sendKey,
     listNotifications,
@@ -65,6 +67,7 @@ function Main() {
 
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [termContent, setTermContent] = useState('')
+  const [termGrid, setTermGrid] = useState<RenderGrid | null>(null)
   const [fontSize, setFontSize] = useState(DEFAULT_FONT_SIZE)
   // 履歴(スクロールバック)モードと、表示中内容の取得時刻(オフライン保持の鮮度表示用)。
   const [historyMode, setHistoryMode] = useState(false)
@@ -129,11 +132,13 @@ function Main() {
   useEffect(() => {
     setHistoryMode(false)
     if (!currentSurface) {
+      setTermGrid(null)
       setTermContent('')
       setLastUpdated(null)
       return
     }
     const cached = loadSurfaceScreen(currentSurface)
+    setTermGrid(cached?.grid ?? null)
     setTermContent(cached?.text ?? '')
     setLastUpdated(cached?.updatedAt ?? null)
   }, [currentSurface])
@@ -149,12 +154,12 @@ function Main() {
 
     const poll = async () => {
       try {
-        const text = await readText(currentSurface)
-        setTermContent(text)
+        const grid = await readGrid(currentSurface)
+        setTermGrid(grid)
         const now = Date.now()
         setLastUpdated(now)
-        // オフライン保持用に最後の画面を永続化（既存の scrollback は維持される）。
-        saveSurfaceScreen(currentSurface, { text, updatedAt: now })
+        // オフライン保持用に最後のグリッドを永続化（text/scrollback は引き継がれる）。
+        saveSurfaceScreen(currentSurface, { grid, updatedAt: now })
       } catch (err) {
         console.error('[app] Poll error:', err)
       }
@@ -179,7 +184,7 @@ function Main() {
       window.removeEventListener('pageshow', resume)
       window.removeEventListener('focus', resume)
     }
-  }, [status, currentSurface, isBrowserSurface, historyMode, readText])
+  }, [status, currentSurface, isBrowserSurface, historyMode, readGrid])
 
   // 履歴モード: スクロールバックを 1 回取得して固定表示。取得分はオフライン閲覧用に
   // キャッシュする。切断中は取得済みキャッシュ(scrollback→text)へフォールバックする。
@@ -189,7 +194,7 @@ function Main() {
     if (status !== 'connected') {
       const cached = loadSurfaceScreen(currentSurface)
       if (cached) {
-        setTermContent(cached.scrollback ?? cached.text)
+        setTermContent(cached.scrollback ?? cached.text ?? '')
         setLastUpdated(cached.updatedAt)
       }
       return
@@ -308,7 +313,7 @@ function Main() {
             gestureRef={gestureRef}
           />
         ) : (
-          <Terminal content={termContent} fontSize={fontSize} gestureRef={gestureRef} />
+          <Terminal grid={historyMode ? null : termGrid} content={termContent} fontSize={fontSize} gestureRef={gestureRef} />
         )}
 
         <InputBar
