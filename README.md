@@ -10,7 +10,7 @@
 ブラウザ / iPhone PWA  (React 19 + @wterm/react)
         │  HTTP / WebSocket
         ▼
-   nginx (Docker, :48700)         ← 静的配信 + /ws,/health プロキシ
+   nginx (Docker, :48710 TLS / :48700→https)   ← TLS 終端 + 静的配信 + /ws,/health プロキシ
         │  WebSocket
         ▼
 ブリッジサーバー (Bun + Hono, ホスト :48701)
@@ -35,6 +35,7 @@
 - ローカルで [cmux](https://cmux.dev) が動作していること
 - [Bun](https://bun.sh)、[pnpm](https://pnpm.io)（`packageManager` 固定）、[Node.js](https://nodejs.org)
 - [Docker](https://www.docker.com/)（クライアント配信に使用。Rancher Desktop 等の互換ランタイムでも可）
+- [mkcert](https://github.com/FiloSottile/mkcert)（HTTPS 用のローカル CA・証明書生成。`brew install mkcert`）
 
 ## セットアップ & 起動（常駐 + Docker）
 
@@ -52,11 +53,12 @@ pnpm bootstrap
 `pnpm bootstrap` は次をまとめて実行します:
 
 1. `pnpm install` — 依存インストール
-2. `pnpm build` — クライアントの本番ビルド
-3. `pnpm cmux:allow-automation` — cmux を Automation モード(`allowAll`)に設定（`~/.config/cmux/cmux.json` を書込、元ファイルは `.bak` 退避）
-4. `docker compose build` — クライアントイメージのビルド
+2. `pnpm certs:setup` — mkcert で TLS 証明書を生成（`certs/` に出力。SAN は `<ホスト名>.local`・localhost・現在の LAN IP）
+3. `pnpm build` — クライアントの本番ビルド
+4. `pnpm cmux:allow-automation` — cmux を Automation モード(`allowAll`)に設定（`~/.config/cmux/cmux.json` を書込、元ファイルは `.bak` 退避）
+5. `docker compose build` — クライアントイメージのビルド
 
-**cmux 設定の反映**: 上記 3 の `allowAll` は、デタッチした常駐デーモンが cmux に拒否されないために必須です（`cmuxOnly` のままだとデーモンは launchd に里子に出され系譜を失い拒否されます）。`cmux reload-config` だけでは起動済みソケットに反映されないため、**次のいずれか**で有効化してください:
+**cmux 設定の反映**: 上記 4 の `allowAll` は、デタッチした常駐デーモンが cmux に拒否されないために必須です（`cmuxOnly` のままだとデーモンは launchd に里子に出され系譜を失い拒否されます）。`cmux reload-config` だけでは起動済みソケットに反映されないため、**次のいずれか**で有効化してください:
 
 - cmux **Settings → Automation → socket mode** を「Automation mode」に切替（ライブ反映）、または
 - **cmux を再起動**（`cmux.json` の値が起動時に適用される）
@@ -72,9 +74,24 @@ pnpm start    # サーバーをホスト常駐起動 + クライアントを Doc
 pnpm stop     # 両方停止
 ```
 
-起動後、ブラウザ/iPhone から **http://<ホスト>:48700/?token=<認証トークン>** を開きます（Safari なら「ホーム画面に追加」で PWA 化）。
+起動後、ブラウザ/iPhone から **https://<ホスト名>.local:48710/?token=<認証トークン>** を開きます（Safari なら「ホーム画面に追加」で PWA 化）。`http://<ホスト>:48700` へのアクセスはクエリを保持したまま https へ 301 リダイレクトされます。iPhone では先に下記「HTTPS / iPhone への証明書インストール」で mkcert のルート CA を信頼させてください。
 
-> **認証トークン**: ブリッジサーバーは LAN から到達可能かつ cmux が `allowAll` のため、WebSocket 接続に共有トークンを必須としています。トークンは初回起動時に自動生成され `apps/server/.run/token` に保存されます（`pnpm start` の完了メッセージにトークン付き URL が表示されます。`pnpm server:logs` でも確認可）。一度 `?token=...` 付きで開けばブラウザに保存されるので、以降は素の URL でアクセスできます。トークンを固定したい場合は環境変数 `CMUX_REMOTE_TOKEN` を設定するか、`apps/server/.env` に `CMUX_REMOTE_TOKEN=...` を書いてください（Bun が起動時に自動読込。ファイルが無ければ自動生成にフォールバック）。
+> **認証トークン**: ブリッジサーバーは LAN から到達可能かつ cmux が `allowAll` のため、WebSocket 接続に共有トークンを必須としています。トークンは初回起動時に自動生成され `apps/server/.run/token` に保存されます（`pnpm start` の完了メッセージにトークン付き URL が表示されます。`pnpm server:logs` でも確認可）。一度 `?token=...` 付きで開けばブラウザに保存されるので、以降は素の URL でアクセスできます。トークンを固定したい場合は環境変数 `CMUX_REMOTE_TOKEN` を設定するか、`apps/server/.env` に `CMUX_REMOTE_TOKEN=...` を書いてください（Bun が起動時に自動読込。ファイルが無ければ自動生成にフォールバック）。なお HTTPS で保護されるのはブラウザ⇔nginx 間です。ブリッジサーバー (:48701) へ直接つなぐ経路は平文のまま残ります（通常フローでは未使用、トークン認証は必須）。
+
+### 3. HTTPS / iPhone への証明書インストール
+
+TLS は Docker 内の nginx で終端します。証明書は mkcert のローカル CA で発行され（`pnpm certs:setup`、`pnpm bootstrap` に含まれます）、Mac 側は `mkcert -install` で自動的に信頼されます。
+
+iPhone で `https://<ホスト名>.local:48710` を開くには、mkcert のルート CA を一度だけ信頼させます:
+
+1. `certs/rootCA.pem` を AirDrop などで iPhone へ送る
+2. 設定アプリ → 「プロファイルがダウンロードされました」→ インストール
+3. 設定 → 一般 → 情報 → 証明書信頼設定 → 当該 CA（mkcert ...）のスイッチを ON
+4. Safari で `https://<ホスト名>.local:48710/?token=<認証トークン>` を開き、「ホーム画面に追加」
+
+> **移行時の注意**: 旧 `http://<ホスト>:48700` と `https://<ホスト名>.local:48710` は別オリジンのため、localStorage に保存済みのトークンは引き継がれません。既存のブックマークやホーム画面 PWA は、一度トークン付きの https URL を開き直してから再追加してください。
+>
+> **LAN IP が変わったら**: `pnpm certs:setup && docker compose restart` で証明書を再発行できます（`.local` 名でアクセスしている場合は再発行不要です）。
 
 ### サーバー単体の管理
 
@@ -117,7 +134,8 @@ pnpm lint        # biome lint
 
 | コマンド | 内容 |
 |---|---|
-| `pnpm bootstrap` | 依存インストール + ビルド + cmux Automation 設定 + Docker イメージビルド |
+| `pnpm bootstrap` | 依存インストール + 証明書生成 + ビルド + cmux Automation 設定 + Docker イメージビルド |
+| `pnpm certs:setup` | mkcert で TLS 証明書を生成（`certs/` に出力、nginx に volume mount） |
 | `pnpm start` / `pnpm stop` | サーバー常駐 + クライアント Docker の起動 / 停止 |
 | `pnpm server:up\|down\|status\|restart\|logs` | ホストのサーバーデーモン管理 |
 | `pnpm cmux:allow-automation` / `pnpm cmux:revert-automation` | cmux の `socketControlMode` を `allowAll` / `cmuxOnly` に設定 |
@@ -140,9 +158,11 @@ apps/
       components/         # Header, Drawer, StatusBar, TabBar, InputBar, Terminal
       hooks/              # useCmux, useWebSocket, useGesture
       lib/cmux-rpc.ts     # JSON-RPC 型とヘルパー
-    nginx.conf            # 静的配信 + /ws,/health をホスト :48701 へプロキシ
+    nginx.conf            # TLS 終端 + 静的配信 + /ws,/health をホスト :48701 へプロキシ
 scripts/
   set-cmux-socket-mode.mjs # cmux automation.socketControlMode パッチ
+  setup-certs.mjs          # mkcert で TLS 証明書を生成（certs/ へ出力）
+certs/                    # TLS 証明書（gitignore、nginx へ volume mount）
 compose.yml               # client(nginx) のみ
 ```
 

@@ -11,7 +11,10 @@ services:
       context: .
       dockerfile: apps/client/Dockerfile
     ports:
-      - "48700:80"
+      - "48700:80" # http → https リダイレクト
+      - "48710:443" # HTTPS 本体（TLS は nginx で終端、証明書は pnpm certs:setup で生成）
+    volumes:
+      - ./certs:/etc/nginx/certs:ro
     # Rancher Desktop / Docker Desktop は host.docker.internal を自動でホストへ向ける。
     # （host-gateway を明示すると VM ブリッジ IP に化けてホストに届かないため指定しない。）
     # Linux ネイティブ Docker で動かす場合のみ次を有効化:

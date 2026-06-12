@@ -2,8 +2,9 @@
   "name": "cmux-remote-editor",
   "private": true,
   "scripts": {
-    "bootstrap": "pnpm install && pnpm build && pnpm cmux:allow-automation && docker compose build && echo 'Bootstrap complete. Apply allowAll via cmux Settings > Automation (socket mode) OR restart cmux, then run: pnpm start'",
-    "start": "pnpm server:up && docker compose up -d && TOKEN=\"${CMUX_REMOTE_TOKEN:-$(sed -n 's/^CMUX_REMOTE_TOKEN=//p' apps/server/.env 2>/dev/null | head -1)}\" && TOKEN=\"${TOKEN:-$(cat apps/server/.run/token 2>/dev/null)}\" && echo \"Up. PWA (first connect, token included): http://localhost:48700/?token=${TOKEN:-<see pnpm server:logs>} | server logs: pnpm server:logs | stop: pnpm stop\"",
+    "bootstrap": "pnpm install && pnpm certs:setup && pnpm build && pnpm cmux:allow-automation && docker compose build && echo 'Bootstrap complete. Apply allowAll via cmux Settings > Automation (socket mode) OR restart cmux, then run: pnpm start'",
+    "certs:setup": "node scripts/setup-certs.mjs",
+    "start": "test -f certs/server.pem || { echo 'certs/server.pem not found — run: pnpm certs:setup'; exit 1; }; pnpm server:up && docker compose up -d && TOKEN=\"${CMUX_REMOTE_TOKEN:-$(sed -n 's/^CMUX_REMOTE_TOKEN=//p' apps/server/.env 2>/dev/null | head -1)}\" && TOKEN=\"${TOKEN:-$(cat apps/server/.run/token 2>/dev/null)}\" && echo \"Up. PWA (first connect, token included): https://$(scutil --get LocalHostName).local:48710/?token=${TOKEN:-<see pnpm server:logs>} | http://...:48700 redirects to https | server logs: pnpm server:logs | stop: pnpm stop\"",
     "stop": "docker compose stop && pnpm server:down",
     "build": "turbo run build",
     "check": "turbo run check",

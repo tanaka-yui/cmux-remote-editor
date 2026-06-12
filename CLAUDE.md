@@ -36,10 +36,10 @@ pnpm server:up|down|status|restart|logs   # ホスト常駐サーバーの管理
 ## アーキテクチャ
 
 ```
-ブラウザ/PWA → nginx (Docker :48700) → ブリッジサーバー (Bun, ホスト :48701) → cmux UDS (JSON-RPC)
+ブラウザ/PWA → nginx (Docker :48710 https / :48700 は https へ 301) → ブリッジサーバー (Bun, ホスト :48701 HTTP) → cmux UDS (JSON-RPC)
 ```
 
-開発時は nginx の代わりに Vite dev サーバー(:5173)が `/ws`・`/health` を :48701 にプロキシする。
+TLS は nginx で終端する。証明書は mkcert 製（`pnpm certs:setup` → `certs/`、gitignore 済み、compose の volume で nginx にマウント）。Bun ブリッジと開発モードは HTTP のまま。開発時は nginx の代わりに Vite dev サーバー(:5173)が `/ws`・`/health` を :48701 にプロキシする。
 
 ### 重要な制約: サーバーは Docker に入れられない
 

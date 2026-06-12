@@ -13,4 +13,4 @@ RUN pnpm --filter @tanaka-yui/cmux-remote-editor-client build
 FROM nginx:latest
 COPY apps/client/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /repo/apps/client/dist /usr/share/nginx/html
-EXPOSE 80
+EXPOSE 80 443
