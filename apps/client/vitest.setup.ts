@@ -1,3 +1,13 @@
+import { cleanup } from '@testing-library/react'
+import { afterEach } from 'vitest'
+
+// 各テスト後に React ツリーをアンマウントして DOM を片付ける。これをしないと
+// 同一ファイル内の複数 render が body に蓄積し、getByLabelText などが複数要素に
+// マッチして失敗する。
+afterEach(() => {
+  cleanup()
+})
+
 // vitest 4 + jsdom 29 の組み合わせでは window.localStorage が空オブジェクトとして
 // 露出し、getItem/setItem/clear などが未定義になる（getItem is not a function）。
 // surface-cache・token・useCmux のテストは jsdom の localStorage を前提にしているため、
