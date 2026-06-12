@@ -313,7 +313,12 @@ function Main() {
             gestureRef={gestureRef}
           />
         ) : (
-          <Terminal grid={historyMode ? null : termGrid} content={termContent} fontSize={fontSize} gestureRef={gestureRef} />
+          <Terminal
+            grid={historyMode ? null : termGrid}
+            content={termContent}
+            fontSize={fontSize}
+            gestureRef={gestureRef}
+          />
         )}
 
         <InputBar
