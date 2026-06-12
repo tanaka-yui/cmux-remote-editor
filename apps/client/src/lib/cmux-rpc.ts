@@ -49,6 +49,8 @@ export interface Surface {
   title: string
   type: string
   pane_ref?: string
+  // Present for browser surfaces (null/undefined for terminals); rendered in an iframe.
+  url?: string | null
 }
 
 export interface TreeNode {

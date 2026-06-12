@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+import { BrowserView } from './components/BrowserView'
 import { DESKTOP_BREAKPOINT, Drawer, SIDEBAR_WIDTH } from './components/Drawer'
 import { Header } from './components/Header'
 import { InputBar } from './components/InputBar'
@@ -65,6 +66,9 @@ function Main() {
   const [fontSize, setFontSize] = useState(DEFAULT_FONT_SIZE)
   const pollRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined)
 
+  const currentSurfaceInfo = surfaces.find((s) => s.ref === currentSurface)
+  const isBrowserSurface = currentSurfaceInfo?.type === 'browser'
+
   // Initial data fetch. Retried on failure: a transient cmux outage right
   // after connecting would otherwise leave the app blank until a manual reload.
   useEffect(() => {
@@ -95,9 +99,10 @@ function Main() {
     Promise.all([listPanes(currentWorkspace), listSurfaces(currentWorkspace)]).catch(() => {})
   }, [status, currentWorkspace, listPanes, listSurfaces])
 
-  // Poll terminal content for the selected surface (tab)
+  // Poll terminal content for the selected surface (tab). Browser surfaces are
+  // rendered in an iframe instead, so their (base64) read_text is never polled.
   useEffect(() => {
-    if (status !== 'connected' || !currentSurface) {
+    if (status !== 'connected' || !currentSurface || isBrowserSurface) {
       if (pollRef.current) clearInterval(pollRef.current)
       return
     }
@@ -117,7 +122,7 @@ function Main() {
     return () => {
       if (pollRef.current) clearInterval(pollRef.current)
     }
-  }, [status, currentSurface, readText])
+  }, [status, currentSurface, isBrowserSurface, readText])
 
   // Gesture handlers: vertical = workspaces, horizontal = tabs, pinch = font size
   const onSwipeUp = useCallback(() => {
@@ -163,7 +168,6 @@ function Main() {
   }, [])
 
   const currentWs = workspaces.find((w) => w.ref === currentWorkspace)
-  const currentSurfaceInfo = surfaces.find((s) => s.ref === currentSurface)
 
   return (
     <div
@@ -216,10 +220,18 @@ function Main() {
           }}
         />
 
-        <Terminal content={termContent} fontSize={fontSize} gestureRef={gestureRef} />
+        {isBrowserSurface ? (
+          <BrowserView
+            url={currentSurfaceInfo?.url ?? ''}
+            title={currentSurfaceInfo?.title ?? ''}
+            gestureRef={gestureRef}
+          />
+        ) : (
+          <Terminal content={termContent} fontSize={fontSize} gestureRef={gestureRef} />
+        )}
 
         <InputBar
-          disabled={!currentSurface}
+          disabled={!currentSurface || isBrowserSurface}
           onSendText={(text) => {
             if (currentSurface) sendText(currentSurface, text).catch((err) => console.error('[app] send error:', err))
           }}
