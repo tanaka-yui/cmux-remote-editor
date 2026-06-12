@@ -56,6 +56,7 @@ function Main() {
     listSurfaces,
     createSurface,
     closeSurface,
+    closeWorkspace,
     focusSurface,
     readText,
     readGrid,
@@ -270,6 +271,9 @@ function Main() {
         notifications={notifications}
         onSelect={(ref) => {
           selectWorkspace(ref)
+        }}
+        onCloseWorkspace={(ref) => {
+          closeWorkspace(ref).catch((err) => console.error('[app] close workspace error:', err))
         }}
         onClose={() => setDrawerOpen(false)}
       />
