@@ -19,7 +19,7 @@ export function TokenGate({ onSubmit }: TokenGateProps) {
         flexDirection: 'column',
         justifyContent: 'center',
         gap: 12,
-        height: '100dvh',
+        height: 'var(--app-height)',
         maxWidth: 420,
         margin: '0 auto',
         padding: 24,
