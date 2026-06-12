@@ -33,6 +33,12 @@ export interface GridCursor {
   blinking?: boolean
 }
 
+export interface TerminalMode {
+  code: number
+  ansi: boolean
+  on: boolean
+}
+
 export interface RenderGrid {
   columns: number
   rows: number
@@ -40,6 +46,7 @@ export interface RenderGrid {
   row_spans: RowSpan[]
   cursor?: GridCursor
   active_screen?: string
+  modes?: TerminalMode[]
 }
 
 const ESC = '\x1b'
