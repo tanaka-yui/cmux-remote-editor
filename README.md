@@ -23,10 +23,11 @@
 
 ### 主な機能
 
-- **ターミナル表示** — `@wterm/react` でレンダリング、`surface.read_text` を 1 秒間隔ポーリング（可視画面）
-- **タブ操作** — サーフェス一覧の表示・切替・新規作成・クローズ（split pane 対応）
-- **入力** — `InputBar` からのテキスト/キー送信
-- **ジェスチャー** — `react-swipeable` + `react-use` による 2 本指スワイプでワークスペース/ペイン/サーフェス移動
+- **ターミナル表示** — `@wterm/react` でレンダリング。`terminal.replay` の `render_grid`（色・属性・カーソルを保持）を 1 秒間隔ポーリングし `renderGridToAnsi` で ANSI 化して忠実描画。全角は 2:1 等幅フォント（M PLUS 1 Code）で cmux と文字幅が一致
+- **タブ操作** — サーフェス一覧の表示・切替・新規作成・クローズ（split pane 対応）。ブラウザサーフェスは iframe 表示
+- **入力 / キーボード** — `InputBar` のコマンド入力＋特殊キーに加え、⌨ で開く **US ANSI フルキーボード**（記号・ワンショット修飾キー Ctrl/Opt/Shift・矢印）。特殊キーは生エスケープシーケンスを `send_text`
+- **タッチ操作** — 一本指でネイティブスクロール（慣性付き）、一本指タップ=左クリック・二本指タップ=右クリック（マウス対応 TUI に SGR 送信）、二本指ピンチでフォント増減
+- **履歴 / オフライン** — スクロールバック履歴モード（取得行数は設定モーダルで 1000〜100000 行に調整可）、最後の画面を localStorage にキャッシュして切断中も表示
 - **PWA** — `vite-plugin-pwa`（autoUpdate）でホーム画面に追加可能
 - **軽量** — クラウド不要、Tailscale / Cloudflare Tunnel の背後にデプロイ可能
 
@@ -157,9 +158,12 @@ apps/
       health.ts           # GET /health
   client/                 # React 19 + Vite PWA
     src/
-      components/         # Header, Drawer, StatusBar, TabBar, InputBar, Terminal
-      hooks/              # useCmux, useWebSocket, useGesture
-      lib/cmux-rpc.ts     # JSON-RPC 型とヘルパー
+      components/         # Header, ConnectionIndicator, Drawer, TabBar, InputBar,
+                          #   Terminal, BrowserView, SettingsModal, TokenGate
+      hooks/              # useCmux, useWebSocket
+      lib/                # cmux-rpc(JSON-RPC), render-grid(grid→ANSI), terminal-keys/coords,
+                          #   sgr-mouse, multitouch, mouse-mode, selection, settings, surface-cache, token
+    main.tsx              # エントリ（M PLUS 1 Code フォント import を含む）
     nginx.conf            # TLS 終端 + 静的配信 + /ws,/health をホスト :48701 へプロキシ
 scripts/
   set-cmux-socket-mode.mjs # cmux automation.socketControlMode パッチ
