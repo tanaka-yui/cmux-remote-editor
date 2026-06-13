@@ -30,16 +30,21 @@ describe('renderGridToAnsi', () => {
     expect(renderGridToAnsi(grid({}))).toBe('\x1b[2J\x1b[H\x1b[0m')
   })
 
-  it('各 span を 1 始まりで絶対位置指定し reset+前景+背景 SGR とテキストを書く', () => {
+  it('行ごとに連続描画し、先頭/span 間の隙間を既定スタイルの空白で埋める', () => {
     const ansi = renderGridToAnsi(
       grid({
         styles: [style(0)],
-        row_spans: [{ row: 0, column: 2, style_id: 0, cell_width: 2, text: 'hi' }],
+        row_spans: [
+          { row: 0, column: 2, style_id: 0, cell_width: 2, text: 'hi' },
+          { row: 0, column: 6, style_id: 0, cell_width: 2, text: 'yo' },
+        ],
         cursor: { row: 0, column: 0, visible: false },
       }),
     )
-    // row0,col2 -> ESC[1;3H、#FFFFFF=255;255;255、#1E1E1E=30;30;30
-    expect(ansi).toContain('\x1b[1;3H\x1b[0;38;2;255;255;255;48;2;30;30;30mhi')
+    // row0 を ESC[1;1H で開始 → 先頭2列の空白 → 'hi'(col2..3) → col4..5 の隙間2空白 → 'yo'。
+    // #FFFFFF=255;255;255、#1E1E1E=30;30;30。
+    const sgr = '\x1b[0;38;2;255;255;255;48;2;30;30;30m'
+    expect(ansi).toContain(`\x1b[1;1H\x1b[0m  ${sgr}hi\x1b[0m  ${sgr}yo`)
   })
 
   it('bold/italic/underline/inverse を SGR コードに変換する', () => {

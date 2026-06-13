@@ -85,10 +85,28 @@ export function renderGridToAnsi(grid: RenderGrid): string {
   for (const s of grid.styles) styleById.set(s.id, s)
 
   const parts: string[] = [`${ESC}[2J${ESC}[H`]
+
+  // 行ごとに span をまとめ、行頭から「隙間を空白で埋めつつ」連続描画する。span を絶対位置(ESC[colH)で
+  // 置くと、wterm コアの CJK セル勘定(width=1)が cmux(全角=2)と食い違い、cmux が全角の「2セル目(継続
+  // セル)」とみなすセルが wterm 側で空セル=余分な空白になって隔間ズレが出る。連続描画なら絶対位置に
+  // 依存せず、span 間は cmux の列差分(cell_width 込み)の空白で埋まるので cmux と一致する。
+  const byRow = new Map<number, RowSpan[]>()
   for (const span of grid.row_spans) {
-    parts.push(`${ESC}[${span.row + 1};${span.column + 1}H`)
-    parts.push(sgrFor(styleById.get(span.style_id)))
-    parts.push(span.text)
+    const arr = byRow.get(span.row)
+    if (arr) arr.push(span)
+    else byRow.set(span.row, [span])
+  }
+  for (const [row, spans] of byRow) {
+    spans.sort((a, b) => a.column - b.column)
+    parts.push(`${ESC}[${row + 1};1H`)
+    let col = 0
+    for (const span of spans) {
+      // 先頭/前の span との隙間は既定スタイルの空白で詰める（重なり時は span が後勝ちで上書き）。
+      if (span.column > col) parts.push(`${ESC}[0m${' '.repeat(span.column - col)}`)
+      parts.push(sgrFor(styleById.get(span.style_id)))
+      parts.push(span.text)
+      col = Math.max(col, span.column + span.cell_width)
+    }
   }
   parts.push(`${ESC}[0m`)
 
