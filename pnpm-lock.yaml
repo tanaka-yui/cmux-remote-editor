@@ -32,6 +32,9 @@ importers:
 
   apps/client:
     dependencies:
+      '@fontsource/m-plus-1-code':
+        specifier: ^5.2.9
+        version: 5.2.9
       '@wterm/dom':
         specifier: 0.3.0
         version: 0.3.0
@@ -724,6 +727,9 @@ packages:
     peerDependenciesMeta:
       '@noble/hashes':
         optional: true
+
+  '@fontsource/m-plus-1-code@5.2.9':
+    resolution: {integrity: sha512-GHIn0C0Wm3/w3RfoxUpBZvJUZl3IJNnUa/h9zJEnI2Ynat86z+oxSXzMIc6KkB9pZ0crSFs/lyHHV6SFa3V4dA==}
 
   '@isaacs/cliui@9.0.0':
     resolution: {integrity: sha512-AokJm4tuBHillT+FpMtxQ60n8ObyXBatq7jD2/JA9dxbDDokKQm8KMht5ibGzLVU9IJDIKK4TPKgMHEYMn3lMg==}
@@ -3250,6 +3256,8 @@ snapshots:
     optional: true
 
   '@exodus/bytes@1.15.1': {}
+
+  '@fontsource/m-plus-1-code@5.2.9': {}
 
   '@isaacs/cliui@9.0.0': {}
 

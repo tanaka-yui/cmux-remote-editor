@@ -303,6 +303,9 @@ export function Terminal({
     // それを超える(モバイル/内容が pane より広い)なら実測幅まで広げて横スクロール可能に。cols*ch は使わない
     // (末尾の空セルまで含み grid が pane より広いと右に余白が出るため)。未計測(0)時は 100% = pane を満たす。
     width: grid ? `max(100%, ${measuredWidth}px)` : undefined,
+    // Latin/CJK の両方をこの 2:1 等幅フォントで描き、全角を確実に 2×Latin にする(セル=cmux と一致)。
+    // 未ロード時のフォールバックに Menlo 系を残す。
+    '--term-font-family': "'M PLUS 1 Code', Menlo, Consolas, 'DejaVu Sans Mono', 'Courier New', monospace",
     '--term-bg': '#1e1e1e',
     '--term-fg': '#e0e0e0',
     '--term-cursor': '#e0e0e0',
