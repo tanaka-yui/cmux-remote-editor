@@ -1,5 +1,29 @@
 import { describe, expect, it } from 'bun:test'
-import { flattenSurfaces, rewriteRequest } from '../ws'
+import { createLineFramer, flattenSurfaces, rewriteRequest } from '../ws'
+
+describe('createLineFramer', () => {
+  it('チャンク境界で割れたマルチバイト文字(絵文字)を復元する', () => {
+    const framer = createLineFramer()
+    const line = `${JSON.stringify({ text: '🙌あ' })}\n`
+    const bytes = Buffer.from(line, 'utf8')
+    // 絵文字(🙌 = F0 9F 99 8C)の途中で分割する。
+    const cut = bytes.indexOf(0xf0) + 2
+    const out = [...framer.push(bytes.subarray(0, cut)), ...framer.push(bytes.subarray(cut))]
+    expect(out).toHaveLength(1)
+    expect(JSON.parse(out[0] as string).text).toBe('🙌あ')
+  })
+
+  it('複数行・末尾の不完全行を跨いで完全な行だけ返す', () => {
+    const framer = createLineFramer()
+    expect(framer.push(Buffer.from('{"a":1}\n{"b":2}\n{"c":', 'utf8'))).toEqual(['{"a":1}', '{"b":2}'])
+    expect(framer.push(Buffer.from('3}\n', 'utf8'))).toEqual(['{"c":3}'])
+  })
+
+  it('空行は除外する', () => {
+    const framer = createLineFramer()
+    expect(framer.push(Buffer.from('\n\n{"a":1}\n', 'utf8'))).toEqual(['{"a":1}'])
+  })
+})
 
 describe('rewriteRequest', () => {
   it('surface.list は system.tree へ書き換え、workspace_ref を保持する', () => {

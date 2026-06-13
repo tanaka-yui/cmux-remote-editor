@@ -41,14 +41,12 @@ const baseProps = {
 }
 
 describe('Terminal width sizing', () => {
-  it('grid モードでは幅を max(floor cols*ch, 実測 px) にし、未計測時は floor へフォールバックする', () => {
+  it('grid モードでは幅を max(100%, 実測 px) にし、未計測時はコンテナ(100%)を満たす', () => {
     render(<Terminal grid={grid} {...baseProps} />)
     const style = wtermProps.current.style as CSSProperties
-    // 全角行は cols*ch を超えるので実測 px(measuredWidth)まで広げてクリップを無くす。intrinsic だと
-    // wterm の再描画で grid DOM が一瞬空になる間に潰れてチラつくため、明示 px ＋ floor cols*ch の max()。
-    // jsdom はレイアウト非計算で scrollWidth=0 → measuredWidth は 0 のままなので floor(PADDING=8 →
-    // 2*8=16px、cols=120)へフォールバックする配線を回帰ガードする。
-    expect(style.width).toBe('max(calc(120ch + 16px), 0px)')
+    // 幅はコンテナ(100%=pane)を満たしつつ、実コンテンツ(末尾空白除外の実測)が超えたら広げる。
+    // jsdom はレイアウト非計算で計測 0 → 100% フォールバックの配線を回帰ガードする。
+    expect(style.width).toBe('max(100%, 0px)')
   })
 
   it('プレーンテキスト(履歴)モードでは幅を固定せずコンテナに合わせる', () => {

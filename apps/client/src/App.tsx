@@ -4,13 +4,14 @@ import { BrowserView } from './components/BrowserView'
 import { DESKTOP_BREAKPOINT, Drawer, SIDEBAR_WIDTH } from './components/Drawer'
 import { Header } from './components/Header'
 import { InputBar } from './components/InputBar'
-import { StatusBar } from './components/StatusBar'
+import { SettingsModal } from './components/SettingsModal'
 import { TabBar } from './components/TabBar'
 import { Terminal } from './components/Terminal'
 import { TokenGate } from './components/TokenGate'
 import { useCmux } from './hooks/useCmux'
 import { deriveMouseMode } from './lib/mouse-mode'
 import type { RenderGrid } from './lib/render-grid'
+import { loadHistoryLines, saveHistoryLines } from './lib/settings'
 import { loadSurfaceScreen, saveSurfaceScreen } from './lib/surface-cache'
 import { encodeKey, isAppCursorMode } from './lib/terminal-keys'
 import { getAuthToken, saveAuthToken } from './lib/token'
@@ -20,8 +21,6 @@ const INIT_RETRY_INTERVAL = 3000
 const MIN_FONT_SIZE = 9
 const MAX_FONT_SIZE = 28
 const DEFAULT_FONT_SIZE = 13
-// 履歴モードで取得するスクロールバック行数。
-const HISTORY_LINES = 2000
 
 export function App() {
   // iOS home-screen PWAs launch at the manifest start_url and use a storage
@@ -75,6 +74,9 @@ function Main() {
   // 履歴(スクロールバック)モードと、表示中内容の取得時刻(オフライン保持の鮮度表示用)。
   const [historyMode, setHistoryMode] = useState(false)
   const [lastUpdated, setLastUpdated] = useState<number | null>(null)
+  // 履歴で取得する行数(設定モーダルで調整、localStorage 永続)と、設定モーダルの開閉。
+  const [historyLines, setHistoryLines] = useState(loadHistoryLines)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const pollRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined)
 
   const currentSurfaceInfo = surfaces.find((s) => s.ref === currentSurface)
@@ -204,7 +206,7 @@ function Main() {
     }
 
     let cancelled = false
-    readText(currentSurface, { scrollback: true, lines: HISTORY_LINES })
+    readText(currentSurface, { scrollback: true, lines: historyLines })
       .then((text) => {
         if (cancelled) return
         setTermContent(text)
@@ -217,7 +219,7 @@ function Main() {
     return () => {
       cancelled = true
     }
-  }, [historyMode, currentSurface, status, readText])
+  }, [historyMode, currentSurface, status, readText, historyLines])
 
   // Mouse mode (from the live grid's DECSET modes) gates tap/click forwarding.
   // History mode shows static text, so treat it as no live grid (mouse off).
@@ -283,8 +285,11 @@ function Main() {
         <Header
           workspaceName={currentWs?.title ?? null}
           onMenuToggle={() => setDrawerOpen((o) => !o)}
+          status={status}
+          lastUpdated={lastUpdated}
           historyMode={historyMode}
           onToggleHistory={currentSurface && !isBrowserSurface ? () => setHistoryMode((h) => !h) : undefined}
+          onOpenSettings={() => setSettingsOpen(true)}
         />
 
         <TabBar
@@ -318,6 +323,7 @@ function Main() {
           />
         )}
 
+        {/* InputBar の下にあった StatusBar(footer) は廃止。接続状態と鮮度表示は Header へ移設した。 */}
         <InputBar
           disabled={!currentSurface || isBrowserSurface}
           onSendText={(text) => {
@@ -331,16 +337,17 @@ function Main() {
           }}
           onAdjustFontSize={adjustFontSize}
         />
-
-        <StatusBar
-          status={status}
-          paneName={currentSurfaceInfo?.title ?? currentSurface}
-          paneIndex={surfaces.findIndex((s) => s.ref === currentSurface)}
-          paneCount={surfaces.length}
-          lastUpdated={lastUpdated}
-          historyMode={historyMode}
-        />
       </div>
+
+      <SettingsModal
+        open={settingsOpen}
+        historyLines={historyLines}
+        onSave={(lines) => {
+          setHistoryLines(lines)
+          saveHistoryLines(lines)
+        }}
+        onClose={() => setSettingsOpen(false)}
+      />
     </div>
   )
 }

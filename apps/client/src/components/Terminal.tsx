@@ -96,8 +96,28 @@ export function Terminal({
     if (!gridRef.current) return
     const gridEl = wrapperRef.current?.querySelector('.term-grid')
     if (!gridEl) return
-    const w = gridEl.scrollWidth
-    setMeasuredWidth((prev) => (w > prev ? w : prev))
+    // 寸法変化直後の「空行だけ(setup の innerHTML='' 後)」フレームは無視する — 空行は span を持たない。
+    // これを測ると幅が誤って潰れ/膨らみ、scrollLeft が左へ飛ぶ(チラつき)。
+    if (!gridEl.querySelector('.term-row > span')) return
+    // 実コンテンツ幅 = 「末尾空白を除いた最右の文字位置」。端末は行を cols 幅まで空白で埋めるため、行全体や
+    // .term-grid を測ると「内容より右の空セル」まで含め、grid が pane より広いと右に余白/横スクロールが出る。
+    // 各テキストノードで末尾空白を除いた Range の right を取り、その最大を content 幅とする(全角は実ジオメトリ
+    // で正しく反映)。Range はコンテナ幅に依存しないのでフィードバックも無い。allow-shrink で現在画面にフィット。
+    const gridLeft = gridEl.getBoundingClientRect().left
+    const range = document.createRange()
+    const walker = document.createTreeWalker(gridEl, NodeFilter.SHOW_TEXT)
+    let maxRight = 0
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const end = (node.nodeValue ?? '').replace(/\s+$/, '').length
+      if (end === 0) continue
+      range.setStart(node, 0)
+      range.setEnd(node, end)
+      const right = range.getBoundingClientRect().right
+      if (right > maxRight) maxRight = right
+    }
+    if (maxRight === 0) return
+    // .wterm は border-box。コンテンツ幅に padding(2*PADDING) を足したものが必要な .wterm 幅。
+    setMeasuredWidth(Math.ceil(maxRight - gridLeft) + PADDING * 2)
   }, [])
 
   // wterm は write 後に setTimeout(0)+rAF で非同期に行を再描画する。その DOM 変化を MutationObserver
@@ -279,7 +299,10 @@ export function Terminal({
     // scrollLeft が左へ飛ぶ(チラつき)ため使わない。明示 px(measuredWidth)＋floor cols*ch の max() は
     // どちらも確定値=空フレームでも潰れず無チラつき。floor は初回(measuredWidth=0)と現寸法への追従を担う。
     // box-sizing:border-box なので padding 分を加算。
-    width: grid ? `max(calc(${grid.columns}ch + ${PADDING * 2}px), ${measuredWidth}px)` : undefined,
+    // .wterm 幅: まずコンテナ(100%)を満たし(右に app 背景の隙間を作らない)、実コンテンツ(末尾空白除外)が
+    // それを超える(モバイル/内容が pane より広い)なら実測幅まで広げて横スクロール可能に。cols*ch は使わない
+    // (末尾の空セルまで含み grid が pane より広いと右に余白が出るため)。未計測(0)時は 100% = pane を満たす。
+    width: grid ? `max(100%, ${measuredWidth}px)` : undefined,
     '--term-bg': '#1e1e1e',
     '--term-fg': '#e0e0e0',
     '--term-cursor': '#e0e0e0',

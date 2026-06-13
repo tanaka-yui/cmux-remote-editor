@@ -1,3 +1,4 @@
+import { StringDecoder } from 'node:string_decoder'
 import type { ServerWebSocket } from 'bun'
 import { resolveCmuxSocketPath } from './socket-path'
 
@@ -106,6 +107,23 @@ export function rewriteRequest(req: RpcRequestLike): RewrittenRequest {
   return { wire: { id: req.id, method: req.method, params }, expectList: false }
 }
 
+// UTF-8 安全な行フレーマ。net.Socket の data チャンクは UTF-8 文字や行の途中で切れ得るため、
+// data.toString() を直接連結すると絵文字(4byte)/CJK(3byte) 等のマルチバイト文字がチャンク境界で
+// 分割され、各破片が U+FFFD(画面上は「?」)に化ける(→「??」)。StringDecoder で未完成バイトを次
+// チャンクまで保持して文字境界を跨いで復元し、改行で区切った完全な行(空行除く)だけを返す。
+export function createLineFramer(): { push(chunk: Buffer): string[] } {
+  const decoder = new StringDecoder('utf8')
+  let buffer = ''
+  return {
+    push(chunk: Buffer): string[] {
+      buffer += decoder.write(chunk)
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+      return lines.filter((line) => line.trim() !== '')
+    },
+  }
+}
+
 interface CmuxResponseLine {
   id?: string
   ok?: boolean
@@ -128,7 +146,6 @@ function connectCmuxSocket(ws: ServerWebSocket<WSData>) {
   // (keyed by request id) so the tree response can be flattened + filtered back
   // into the { surfaces } shape the client expects.
   const pendingList = new Map<string, string | undefined>()
-  let buffer = ''
 
   function relay(raw: string) {
     let req: RpcRequestLike
@@ -143,13 +160,9 @@ function connectCmuxSocket(ws: ServerWebSocket<WSData>) {
     sock.write(JSON.stringify(wire) + '\n')
   }
 
+  const framer = createLineFramer()
   sock.on('data', (data: Buffer) => {
-    buffer += data.toString()
-    const lines = buffer.split('\n')
-    buffer = lines.pop() ?? ''
-    for (const line of lines) {
-      if (!line.trim()) continue
-
+    for (const line of framer.push(data)) {
       let parsed: CmuxResponseLine | null = null
       try {
         parsed = JSON.parse(line)

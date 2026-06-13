@@ -8,7 +8,10 @@
 
 html,
 body {
-  height: 100%;
+  /* app(--app-height) と同じ動的ビューポート(dvh)基準にする。100% だとレイアウトビューポート
+     (iPad Safari でツールバー表示時は視覚ビューポートより高い)になり、app の下に余分な空きができて
+     そこへパン(縦スクロール)できてしまうため、視覚ビューポートに一致する 100dvh を使う。 */
+  height: 100dvh;
   width: 100%;
   overflow: hidden;
   background-color: #1a1a2e;

@@ -1,0 +1,24 @@
+// 履歴(スクロールバック)で取得する行数の設定。localStorage に永続化する。値は readText の
+// scrollback lines に渡る。多すぎると取得/描画が重くなるため下限・上限でクランプする。
+const KEY = 'cmux:history-lines'
+
+export const HISTORY_LINES_MIN = 1000
+export const HISTORY_LINES_MAX = 100000
+export const HISTORY_LINES_DEFAULT = 2000
+
+export function clampHistoryLines(n: number): number {
+  if (!Number.isFinite(n)) return HISTORY_LINES_DEFAULT
+  return Math.min(HISTORY_LINES_MAX, Math.max(HISTORY_LINES_MIN, Math.round(n)))
+}
+
+export function loadHistoryLines(): number {
+  if (typeof localStorage === 'undefined') return HISTORY_LINES_DEFAULT
+  const raw = localStorage.getItem(KEY)
+  if (raw === null) return HISTORY_LINES_DEFAULT
+  return clampHistoryLines(Number.parseInt(raw, 10))
+}
+
+export function saveHistoryLines(n: number): void {
+  if (typeof localStorage === 'undefined') return
+  localStorage.setItem(KEY, String(clampHistoryLines(n)))
+}
