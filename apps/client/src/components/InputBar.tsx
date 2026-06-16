@@ -185,8 +185,8 @@ export function InputBar({ disabled, onSendText, onSendKey, onAdjustFontSize }: 
         paddingLeft: 8,
         paddingRight: 8,
         // 最下部要素なのでホームインジケータ(iPhone)に被らない程度の余白を確保しつつ詰める。
-        // フル inset(≈34px)はボタン下が空きすぎるため、inset から 16px 差し引いた値（最低 6px）にする。
-        paddingBottom: 'max(6px, calc(env(safe-area-inset-bottom) - 16px))',
+        // フル inset(≈34px)はボタン下が空きすぎるため、inset から 24px 差し引いた値（最低 6px）にする。
+        paddingBottom: 'max(6px, calc(env(safe-area-inset-bottom) - 24px))',
         backgroundColor: '#16213e',
         borderTop: '1px solid #2a2a4e',
         flexShrink: 0,
