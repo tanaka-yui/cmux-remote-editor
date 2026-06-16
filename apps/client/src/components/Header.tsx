@@ -8,9 +8,8 @@ interface HeaderProps {
   // 接続状態＋鮮度表示(旧 footer/StatusBar からヘッダーへ移設)。
   status: ConnectionStatus
   lastUpdated?: number | null
-  // 履歴(スクロールバック)モードのトグル。undefined のときボタンを出さない（例: ブラウザサーフェス）。
+  // 履歴(スクロールバック)を遡っている間の鮮度表示（「履歴 · HH:MM時点」）に使う。
   historyMode?: boolean
-  onToggleHistory?: () => void
   // 設定モーダルを開く。
   onOpenSettings: () => void
 }
@@ -22,7 +21,6 @@ export function Header({
   status,
   lastUpdated,
   historyMode,
-  onToggleHistory,
   onOpenSettings,
 }: HeaderProps) {
   return (
@@ -70,30 +68,10 @@ export function Header({
       >
         {workspaceName ?? 'cmux Remote'}
       </span>
-      {/* 右側グループ: 接続状態＋鮮度(旧 footer)と履歴トグル。 */}
+      {/* 右側グループ: 接続状態＋鮮度(旧 footer)と設定。 */}
       <div style={{ marginLeft: 8, display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
         <ConnectionIndicator status={status} lastUpdated={lastUpdated} historyMode={historyMode} />
-        {onToggleHistory && (
-          <button
-            type="button"
-            onClick={onToggleHistory}
-            aria-label="Toggle history"
-            aria-pressed={historyMode}
-            style={{
-              background: historyMode ? '#4caf50' : 'none',
-              border: '1px solid #2a2a4e',
-              borderRadius: 6,
-              color: historyMode ? '#16213e' : '#aaa',
-              fontSize: 13,
-              padding: '4px 10px',
-              cursor: 'pointer',
-              lineHeight: 1,
-            }}
-          >
-            履歴
-          </button>
-        )}
-        {/* 設定（履歴バッファ等）。履歴ボタンの隣の歯車。 */}
+        {/* 設定（履歴バッファ等）。 */}
         <button
           type="button"
           onClick={onOpenSettings}
