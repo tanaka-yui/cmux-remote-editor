@@ -293,8 +293,16 @@ function Main() {
         .then((ok) => {
           setPushEnabled(ok)
           savePushEnabled(ok)
+          // 許可が granted 以外で false が返るケース(iOS で拒否/未許可)を明示する。
+          if (!ok) alert('通知を有効化できませんでした（許可が下りていない可能性があります）。')
         })
-        .catch((err) => console.error('[app] push subscribe error:', err))
+        .catch((err) => {
+          // 失敗の握りつぶしは iPhone で原因が見えず切り分け不能になるため、実エラーを表示する。
+          console.error('[app] push subscribe error:', err)
+          setPushEnabled(false)
+          savePushEnabled(false)
+          alert(`通知の有効化に失敗しました: ${err instanceof Error ? err.message : String(err)}`)
+        })
     } else {
       unsubscribeFromPush()
         .then(() => {
