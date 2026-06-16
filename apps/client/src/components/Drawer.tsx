@@ -288,7 +288,8 @@ function WorkspaceList({
   onSelect,
   onCloseWorkspace,
   onClose,
-}: Omit<DrawerProps, 'open' | 'onNewWorkspace'>) {
+  isDesktop,
+}: Omit<DrawerProps, 'open' | 'onNewWorkspace'> & { isDesktop: boolean }) {
   const unreadCounts = unreadCountByWorkspace(notifications)
   const latestNotifs = latestNotificationByWorkspace(notifications)
 
@@ -312,7 +313,9 @@ function WorkspaceList({
             notification={latestNotifs.get(ws.id)}
             onClick={() => {
               onSelect(ws.ref)
-              onClose()
+              // ピン留めサイドバー（デスクトップ/タブレット=iPad 等）はワークスペース切替で閉じない。
+              // モバイルはオーバーレイのため本文を覆い続けないよう選択で閉じる。
+              if (!isDesktop) onClose()
             }}
             onCloseWorkspace={onCloseWorkspace}
           />
@@ -385,6 +388,7 @@ export function Drawer({
       onSelect={onSelect}
       onCloseWorkspace={onCloseWorkspace}
       onClose={onClose}
+      isDesktop={isDesktop}
     />
   )
 

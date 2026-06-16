@@ -52,6 +52,41 @@ describe('Drawer close workspace (確認ダイアログ)', () => {
   })
 })
 
+describe('Drawer workspace select (ピン留めサイドバーは閉じない)', () => {
+  function renderForSelect(innerWidth: number) {
+    Object.defineProperty(window, 'innerWidth', { value: innerWidth, configurable: true, writable: true })
+    const onSelect = vi.fn()
+    const onClose = vi.fn()
+    render(
+      <Drawer
+        open
+        workspaces={[ws]}
+        currentWorkspace="workspace:A"
+        notifications={[]}
+        onSelect={onSelect}
+        onCloseWorkspace={() => {}}
+        onNewWorkspace={vi.fn().mockResolvedValue(undefined)}
+        onClose={onClose}
+      />,
+    )
+    return { onSelect, onClose }
+  }
+
+  it('デスクトップ/タブレット幅では選択しても onClose を呼ばない（ピン留め維持）', () => {
+    const { onSelect, onClose } = renderForSelect(1024)
+    fireEvent.click(screen.getByText('Alpha'))
+    expect(onSelect).toHaveBeenCalledWith('workspace:A')
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('モバイル幅では選択でオーバーレイを閉じる（onClose を呼ぶ）', () => {
+    const { onSelect, onClose } = renderForSelect(500)
+    fireEvent.click(screen.getByText('Alpha'))
+    expect(onSelect).toHaveBeenCalledWith('workspace:A')
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('Drawer status badge (is_read ゲート)', () => {
   it('未読の waiting 通知は Needs input を表示する', () => {
     renderDrawer([waitingUnread])
