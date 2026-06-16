@@ -320,7 +320,7 @@ function WorkspaceList({
   onSelect,
   onCloseWorkspace,
   onClose,
-}: Omit<DrawerProps, 'open'>) {
+}: Omit<DrawerProps, 'open' | 'onNewWorkspace'>) {
   const unreadCounts = unreadCountByWorkspace(notifications)
   const latestNotifs = latestNotificationByWorkspace(notifications)
 
