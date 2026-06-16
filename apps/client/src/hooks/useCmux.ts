@@ -116,6 +116,16 @@ export function useCmux() {
     [currentWorkspace, rpc],
   )
 
+  const createWorkspace = useCallback(async () => {
+    // workspace.create は ws.ts が透過中継する。空パラメータで既定ディレクトリの新規WS
+    // (+ターミナル surface 1つ)を作る。cmux 側は新WSを自動選択しないため、返り値の
+    // workspace_ref を既存 selectWorkspace で追従選択する(非選択WSは read_text 不可)。
+    const result = (await rpc('workspace.create')) as { workspace_ref?: string }
+    const list = await listWorkspaces()
+    if (result.workspace_ref) selectWorkspace(result.workspace_ref)
+    return list
+  }, [rpc, listWorkspaces, selectWorkspace])
+
   const listPanes = useCallback(
     async (workspaceRef?: string) => {
       const params: Record<string, unknown> = {}
@@ -312,6 +322,7 @@ export function useCmux() {
     notifications,
     listWorkspaces,
     selectWorkspace,
+    createWorkspace,
     listPanes,
     listSurfaces,
     createSurface,

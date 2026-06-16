@@ -295,3 +295,37 @@ describe('useCmux closeWorkspace', () => {
     expect(result.current.currentSurface).toBeNull()
   })
 })
+
+describe('useCmux createWorkspace', () => {
+  const findReq = (method: string) =>
+    hoisted.sent
+      .map((raw) => JSON.parse(raw) as { method: string; params: Record<string, unknown> })
+      .find((req) => req.method === method)
+
+  it('workspace.create を送り、返り値 workspace_ref で workspace.select を送る', async () => {
+    hoisted.responses['workspace.create'] = { workspace_ref: 'workspace:NEW' }
+    hoisted.responses['workspace.list'] = {
+      workspaces: [
+        { id: 'old', ref: 'workspace:OLD', title: 'Old', index: 0, selected: true },
+        { id: 'new', ref: 'workspace:NEW', title: 'New', index: 1, selected: false },
+      ],
+    }
+
+    const { result } = renderHook(() => useCmux())
+    await act(async () => {
+      await result.current.createWorkspace()
+    })
+
+    // workspace.create は空パラメータで送る（既定ディレクトリの新規WSを作る）
+    const createReq = findReq('workspace.create')
+    expect(createReq).toBeDefined()
+    expect(createReq?.params).toEqual({})
+
+    // 返り値 workspace_ref を使い cmux 側も追従選択する
+    const selectReq = findReq('workspace.select')
+    expect(selectReq?.params).toEqual({ workspace_id: 'workspace:NEW' })
+
+    // アプリ側の currentWorkspace も新WSへ切り替わる
+    expect(result.current.currentWorkspace).toBe('workspace:NEW')
+  })
+})
