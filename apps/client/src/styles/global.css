@@ -8,10 +8,11 @@
 
 html,
 body {
-  /* app(--app-height) と同じ動的ビューポート(dvh)基準にする。100% だとレイアウトビューポート
-     (iPad Safari でツールバー表示時は視覚ビューポートより高い)になり、app の下に余分な空きができて
-     そこへパン(縦スクロール)できてしまうため、視覚ビューポートに一致する 100dvh を使う。 */
-  height: 100dvh;
+  /* large viewport(lvh)=物理画面の全高を基準にする。iOS PWA(black-translucent + viewport-fit=cover)では
+     100dvh が「画面全高 − 上 safe-area」を返し(実測 dvh=812 / lvh=screen=874 / insT=62)、body/app の下端が
+     画面下端まで届かず下に上 inset 分(≈62px)の空白が残る。lvh は画面下端まで届くのでこの空白を消す。
+     上 inset は下の body padding-top で、下 inset は InputBar の padding-bottom で別途確保する。 */
+  height: 100lvh;
   width: 100%;
   overflow: hidden;
   background-color: #1a1a2e;
@@ -28,9 +29,10 @@ body {
 }
 
 :root {
-  /* Full dynamic viewport minus the top safe-area inset that `body` already
-     pads — keeps the bottom (input bar / status bar) on-screen in iOS PWA. */
-  --app-height: calc(100dvh - env(safe-area-inset-top));
+  /* Full (large) viewport minus the top safe-area inset that `body` already
+     pads — reaches the physical screen bottom in iOS PWA (100dvh fell short by
+     the top inset, leaving a bottom gap). */
+  --app-height: calc(100lvh - env(safe-area-inset-top));
 }
 
 #root {
