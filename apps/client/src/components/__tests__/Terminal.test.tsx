@@ -58,6 +58,59 @@ describe('Terminal width sizing', () => {
   })
 })
 
+describe('Terminal history→live scroll', () => {
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+  })
+
+  // 履歴(grid=null)→ライブ(grid)復帰時、wrapper を最下部へ戻して最新行を見せる。これが無いと
+  // 履歴中 scrollTop=0 のまま grid(viewport より高い)が描かれ、最新のやりとりが下に隠れる。
+  // jsdom はレイアウト非計算なので scrollTop/scrollHeight を定義して「最下部代入」の配線を回帰ガード。
+  it('履歴→ライブ復帰で wrapper を最下部(scrollHeight)へスクロールする', () => {
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      cb(0)
+      return 0
+    })
+    vi.stubGlobal('cancelAnimationFrame', () => {})
+    const { container, rerender } = render(<Terminal grid={null} {...baseProps} content="old" />)
+    const wrapper = container.firstChild as HTMLElement
+    let scrollTopVal = 0
+    Object.defineProperty(wrapper, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTopVal,
+      set: (v: number) => {
+        scrollTopVal = v
+      },
+    })
+    Object.defineProperty(wrapper, 'scrollHeight', { configurable: true, get: () => 1000 })
+    rerender(<Terminal grid={grid} {...baseProps} />)
+    expect(wrapper.scrollTop).toBe(1000)
+  })
+
+  // 立ち上がりの一回だけ。ライブ継続中(grid→grid)は動かさない(動かすと上スクロールでの履歴進入が不能)。
+  it('ライブ継続中(grid→grid)は最下部へ戻さない', () => {
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      cb(0)
+      return 0
+    })
+    vi.stubGlobal('cancelAnimationFrame', () => {})
+    const { container, rerender } = render(<Terminal grid={grid} {...baseProps} />)
+    const wrapper = container.firstChild as HTMLElement
+    let scrollTopVal = 123
+    Object.defineProperty(wrapper, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTopVal,
+      set: (v: number) => {
+        scrollTopVal = v
+      },
+    })
+    Object.defineProperty(wrapper, 'scrollHeight', { configurable: true, get: () => 1000 })
+    rerender(<Terminal grid={{ ...grid, rows: 41 }} {...baseProps} />)
+    expect(wrapper.scrollTop).toBe(123)
+  })
+})
+
 describe('Terminal tap handling', () => {
   afterEach(cleanup)
 

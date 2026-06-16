@@ -189,6 +189,32 @@ export function Terminal({
     return () => wrapper.removeEventListener('scroll', onScroll, true)
   }, [useGrid, onExitHistory])
 
+  // 履歴→ライブ復帰時に wrapper を最下部(最新)へ戻す。grid モードでは wrapper が縦スクローラだが、
+  // 履歴中は .wterm が height:100% で wrapper は非スクロール=scrollTop:0 のまま。復帰で .wterm が
+  // rows 由来の高さ(viewport より高いことが多い)になると、戻さない限り最新行が下に隠れる。grid 化の
+  // 立ち上がり(false→true)だけで実行する: 毎ポーリングで動かすと上スクロールでの履歴進入ができなくなる。
+  const prevUseGridRef = useRef(useGrid)
+  useEffect(() => {
+    const wasGrid = prevUseGridRef.current
+    prevUseGridRef.current = useGrid
+    if (!useGrid || wasGrid) return
+    const wrapper = wrapperRef.current
+    if (!wrapper) return
+    // grid の高さは @wterm が rows から付与する。wterm/自前の rAF 後にレイアウトが確定するため
+    // 二重 rAF で確定後に最下部へ合わせる。
+    let raf2 = 0
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        const el = wrapperRef.current
+        if (el) el.scrollTop = el.scrollHeight
+      })
+    })
+    return () => {
+      cancelAnimationFrame(raf1)
+      cancelAnimationFrame(raf2)
+    }
+  }, [useGrid])
+
   const gestureStateRef = useRef<GestureState | null>(null)
 
   // クリック送信が有効なのは「マウス入力 + SGR + grid（cols/rows 既知）」が揃ったときだけ。
