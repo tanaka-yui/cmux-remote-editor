@@ -279,8 +279,11 @@ export function Terminal({
     flex: 1,
     minHeight: 0,
     width: '100%',
-    // grid モードはネイティブ幅(cols セル)がスマホ幅を超えるためスクロール可能にする。
-    overflow: useGrid ? 'auto' : 'hidden',
+    // grid モードは横(cols がスマホ幅超)、履歴(プレーンテキスト)モードは縦(スクロールバック)に
+    // スクロールさせる。常に auto。履歴は下の .wterm 自身が has-scrollback で縦スクロールするが、
+    // .wterm の高さ(100%)が解決できない環境でも content がビューポートを超えたら wrapper 側で
+    // 受けてスクロール可能にする(保険)。従来の 'hidden' は履歴の overflow をクリップし動かせなかった。
+    overflow: 'auto',
     // 一本指でブラウザのネイティブ縦横スクロール（慣性付き）。タップ/右クリックは touchend で判定する。
     touchAction: 'pan-x pan-y',
   }
@@ -310,6 +313,13 @@ export function Terminal({
     '--term-fg': '#e0e0e0',
     '--term-cursor': '#e0e0e0',
     '--term-font-size': `${fontSize}px`,
+    // 履歴(プレーンテキスト)モードは .wterm をビューポート高(wrapper の 100%)に固定する。これで wterm の
+    // autoResize は「画面に収まる行数」だけを可視グリッドにし、超過分を自前スクロールバックへ退避 →
+    // has-scrollback で .wterm が overflow-y:auto になり縦スクロール可能・書込み後は末尾(最新)へ追従する。
+    // 未指定だと .wterm が全行ぶんに伸びてスクロールバックが空=wrapper にクリップされ動かせなかった。
+    // grid モードは WTerminal が rows 由来の固定高(mergedStyle)を付けるため height キーを入れない
+    // (undefined で上書きすると固定高が消えるので、キー自体を入れない条件付きスプレッドにする)。
+    ...(useGrid ? {} : { height: '100%' }),
   } as CSSProperties
 
   return (
