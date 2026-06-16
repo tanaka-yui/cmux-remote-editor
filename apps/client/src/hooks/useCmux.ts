@@ -9,6 +9,7 @@ import {
   type Workspace,
 } from '../lib/cmux-rpc'
 import type { RenderGrid } from '../lib/render-grid'
+import type { RpcError } from '../lib/rpc-error'
 import { resolveSelectedRef } from '../lib/selection'
 import { getAuthToken } from '../lib/token'
 import { type ConnectionStatus, useWebSocket } from './useWebSocket'
@@ -39,7 +40,11 @@ export function useCmux() {
         clearTimeout(pending.timer)
         pendingRef.current.delete(resp.id)
         if (resp.error || resp.ok === false) {
-          pending.reject(new Error(resp.error?.message ?? 'RPC failed (ok=false)'))
+          // cmux のエラー code を Error に載せる。App のポーリングが「閉じられた surface」
+          // （invalid_params / not_found）を判別して surface 一覧を再取得するのに使う。
+          const err = new Error(resp.error?.message ?? 'RPC failed (ok=false)') as RpcError
+          if (resp.error?.code) err.code = resp.error.code
+          pending.reject(err)
         } else {
           pending.resolve(resp.result)
         }

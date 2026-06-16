@@ -11,6 +11,7 @@ import { TokenGate } from './components/TokenGate'
 import { useCmux } from './hooks/useCmux'
 import { deriveMouseMode } from './lib/mouse-mode'
 import type { RenderGrid } from './lib/render-grid'
+import { isStaleSurfaceError } from './lib/rpc-error'
 import { loadHistoryLines, saveHistoryLines } from './lib/settings'
 import { loadSurfaceScreen, saveSurfaceScreen } from './lib/surface-cache'
 import { encodeKey, isAppCursorMode } from './lib/terminal-keys'
@@ -78,6 +79,9 @@ function Main() {
   const [historyLines, setHistoryLines] = useState(loadHistoryLines)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const pollRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined)
+  // stale-surface エラーで再取得を試みた surface。同一 surface での再取得ループを防ぐ
+  // （surface ごとに 1 回だけ resync する）。ポーリング成功でリセット。
+  const staleResyncRef = useRef<string | null>(null)
 
   const currentSurfaceInfo = surfaces.find((s) => s.ref === currentSurface)
   const isBrowserSurface = currentSurfaceInfo?.type === 'browser'
@@ -165,8 +169,25 @@ function Main() {
         setLastUpdated(now)
         // オフライン保持用に最後のグリッドを永続化（text/scrollback は引き継がれる）。
         saveSurfaceScreen(currentSurface, { grid, updatedAt: now })
+        staleResyncRef.current = null
       } catch (err) {
-        console.error('[app] Poll error:', err)
+        // currentSurface が「閉じられた surface」を指すと cmux は terminal.replay に
+        // 「Missing or invalid terminal_id」を返し続ける（別ウィンドウ/別 PWA でタブを閉じた、
+        // 通信不良中にタブ構成が変わった等）。surface 一覧を再取得すれば resolveSelectedRef が
+        // 無効 ref を捨てて生きた surface へ退避し、Mac 側でフォーカスし直さなくても自動復帰する。
+        // surface ごとに 1 回だけ試みてループを防ぐ（無効なら次の list で別 surface へ移る）。
+        if (isStaleSurfaceError(err) && staleResyncRef.current !== currentSurface) {
+          staleResyncRef.current = currentSurface
+          // 再取得自体が通信不良で失敗したら、フラグを解除して次ポーリングで再挑戦できるようにする
+          // （成功時は据え置き＝同一 surface でのループ防止。ポーリング成功で null にリセットされる）。
+          listSurfaces(currentWorkspace ?? undefined).catch(() => {
+            if (staleResyncRef.current === currentSurface) staleResyncRef.current = null
+          })
+          return
+        }
+        // 通信不良の一時的失敗（タイムアウト等）はそのまま握りつぶす。stale でない想定外の
+        // エラーのみログする。stale でループ中（2 回目以降）は無言で次の成功を待つ。
+        if (!isStaleSurfaceError(err)) console.error('[app] Poll error:', err)
       }
     }
 
@@ -189,7 +210,7 @@ function Main() {
       window.removeEventListener('pageshow', resume)
       window.removeEventListener('focus', resume)
     }
-  }, [status, currentSurface, isBrowserSurface, historyMode, readGrid])
+  }, [status, currentSurface, currentWorkspace, isBrowserSurface, historyMode, readGrid, listSurfaces])
 
   // 履歴モード: スクロールバックを 1 回取得して固定表示。取得分はオフライン閲覧用に
   // キャッシュする。切断中は取得済みキャッシュ(scrollback→text)へフォールバックする。

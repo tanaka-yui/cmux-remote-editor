@@ -11,6 +11,7 @@ const hoisted = vi.hoisted(() => ({
   sent: [] as string[],
   onMessage: { fn: (_data: string) => {} },
   responses: {} as Record<string, unknown>,
+  errors: {} as Record<string, { code: string; message: string }>,
 }))
 
 vi.mock('../useWebSocket', () => ({
@@ -21,6 +22,11 @@ vi.mock('../useWebSocket', () => ({
       send: (data: string) => {
         hoisted.sent.push(data)
         const req = JSON.parse(data) as { id: string; method: string }
+        const error = hoisted.errors[req.method]
+        if (error) {
+          hoisted.onMessage.fn(JSON.stringify({ id: req.id, ok: false, error }))
+          return
+        }
         const result = hoisted.responses[req.method] ?? {}
         hoisted.onMessage.fn(JSON.stringify({ id: req.id, ok: true, result }))
       },
@@ -31,6 +37,7 @@ vi.mock('../useWebSocket', () => ({
 beforeEach(() => {
   hoisted.sent.length = 0
   hoisted.responses = {}
+  hoisted.errors = {}
 })
 
 describe('useCmux closeSurface', () => {
@@ -104,6 +111,20 @@ describe('useCmux surface RPC params', () => {
     const req = findReq('terminal.replay')
     expect(req?.params).toEqual({ surface_id: 'surface:7' })
     expect(req?.params).not.toHaveProperty('surface_ref')
+  })
+
+  it('cmux エラー時は code を載せた Error で reject する（App の stale-surface 判定に使う）', async () => {
+    hoisted.errors['terminal.replay'] = { code: 'invalid_params', message: 'Missing or invalid terminal_id' }
+    const { result } = renderHook(() => useCmux())
+
+    let caught: unknown
+    await act(async () => {
+      caught = await result.current.readGrid('surface:dead').catch((e) => e)
+    })
+
+    expect(caught).toBeInstanceOf(Error)
+    expect((caught as Error).message).toBe('Missing or invalid terminal_id')
+    expect((caught as Error & { code?: string }).code).toBe('invalid_params')
   })
 })
 
