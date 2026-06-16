@@ -1,9 +1,15 @@
 import { Hono } from 'hono'
 import { serveStatic } from 'hono/bun'
 import { join } from 'path'
+import webpush from 'web-push'
 
 import { loadOrCreateToken, tokenEquals } from './auth'
 import { health } from './health'
+import { createPoller } from './push/poller'
+import { createPushRoutes } from './push/routes'
+import { createSender } from './push/send'
+import { createPushStore } from './push/store'
+import { loadOrCreateVapidKeys } from './push/vapid'
 import { loadTlsOptions } from './tls'
 import { createWebSocketHandler, type WSData } from './ws'
 
@@ -18,8 +24,34 @@ const tls = loadTlsOptions()
 const authToken = loadOrCreateToken()
 const clientDistPath = join(import.meta.dir, '../../client/dist')
 
+// Web Push: VAPID 鍵を読み込み(無ければ生成)、送信ライブラリに設定。購読ストアと、
+// WS 接続の有無に依らず動くバックグラウンドポーラー(購読が 1 件以上ある時のみ稼働)を用意する。
+const runDir = join(import.meta.dir, '../.run')
+const vapidKeys = loadOrCreateVapidKeys(join(runDir, 'push-vapid.json'))
+webpush.setVapidDetails(
+  process.env.CMUX_PUSH_SUBJECT ?? 'mailto:cmux-remote@example.com',
+  vapidKeys.publicKey,
+  vapidKeys.privateKey,
+)
+const pushStore = createPushStore(runDir)
+const pushSender = createSender(pushStore)
+const pushPoller = createPoller({
+  store: pushStore,
+  sender: pushSender,
+  pollMs: parseInt(process.env.CMUX_PUSH_POLL_MS ?? '10000', 10),
+})
+const pushRoutes = createPushRoutes({
+  store: pushStore,
+  vapidPublicKey: vapidKeys.publicKey,
+  authToken,
+  onChange: () => pushPoller.refresh(),
+})
+
 // Health check
 app.route('/', health)
+
+// Web Push 購読エンドポイント（静的配信のフォールバックより前に登録する）。
+app.route('/', pushRoutes)
 
 // Static files (PWA)
 app.use('/*', serveStatic({ root: clientDistPath }))
@@ -57,3 +89,6 @@ console.log(`[server] auth token: ${authToken}`)
 console.log(
   '[server] first connect: open the PWA with ?token=<auth token> appended to its URL (the app stores it afterwards)',
 )
+
+// 既に購読が永続化されていれば(再起動後など)ポーラーを起動する。
+pushPoller.refresh()
