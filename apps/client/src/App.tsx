@@ -58,6 +58,7 @@ function Main() {
     createSurface,
     closeSurface,
     closeWorkspace,
+    createWorkspace,
     focusSurface,
     readText,
     readGrid,
@@ -294,6 +295,11 @@ function Main() {
         onCloseWorkspace={(ref) => {
           closeWorkspace(ref).catch((err) => console.error('[app] close workspace error:', err))
         }}
+        onNewWorkspace={() =>
+          createWorkspace()
+            .then(() => setDrawerOpen(false))
+            .catch((err) => console.error('[app] create workspace error:', err))
+        }
         onClose={() => setDrawerOpen(false)}
       />
 

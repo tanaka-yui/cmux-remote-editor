@@ -12,6 +12,7 @@ interface DrawerProps {
   notifications: CmuxNotification[]
   onSelect: (id: string) => void
   onCloseWorkspace: (ref: string) => void
+  onNewWorkspace: () => Promise<void>
   onClose: () => void
 }
 
@@ -319,7 +320,7 @@ function WorkspaceList({
   onSelect,
   onCloseWorkspace,
   onClose,
-}: Omit<DrawerProps, 'open'>) {
+}: Omit<DrawerProps, 'open' | 'onNewWorkspace'>) {
   const unreadCounts = unreadCountByWorkspace(notifications)
   const latestNotifs = latestNotificationByWorkspace(notifications)
 
@@ -354,6 +355,46 @@ function WorkspaceList({
   )
 }
 
+function NewWorkspaceButton({ onNewWorkspace }: { onNewWorkspace: () => Promise<void> }) {
+  const [creating, setCreating] = useState(false)
+  return (
+    <button
+      type="button"
+      aria-label="New workspace"
+      disabled={creating}
+      onClick={async () => {
+        if (creating) return
+        setCreating(true)
+        try {
+          await onNewWorkspace()
+        } finally {
+          setCreating(false)
+        }
+      }}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+        width: '100%',
+        padding: '10px 12px',
+        paddingBottom: 'calc(10px + env(safe-area-inset-bottom))',
+        background: 'none',
+        border: 'none',
+        borderTop: '1px solid #1e2a42',
+        color: creating ? '#888' : '#e0e0e0',
+        fontSize: 12,
+        fontWeight: 600,
+        textAlign: 'left',
+        cursor: creating ? 'default' : 'pointer',
+        flexShrink: 0,
+      }}
+    >
+      <span style={{ fontSize: 15, lineHeight: 1 }}>+</span>
+      {creating ? '作成中…' : '新規ワークスペース'}
+    </button>
+  )
+}
+
 export { DESKTOP_BREAKPOINT, SIDEBAR_WIDTH }
 
 export function Drawer({
@@ -363,6 +404,7 @@ export function Drawer({
   notifications,
   onSelect,
   onCloseWorkspace,
+  onNewWorkspace,
   onClose,
 }: DrawerProps) {
   const isDesktop = typeof window !== 'undefined' && window.innerWidth >= DESKTOP_BREAKPOINT
@@ -414,6 +456,7 @@ export function Drawer({
           cmux Remote
         </div>
         {sidebarContent}
+        <NewWorkspaceButton onNewWorkspace={onNewWorkspace} />
       </nav>
     )
   }
@@ -454,6 +497,7 @@ export function Drawer({
         }}
       >
         {sidebarContent}
+        <NewWorkspaceButton onNewWorkspace={onNewWorkspace} />
       </nav>
     </>
   )
