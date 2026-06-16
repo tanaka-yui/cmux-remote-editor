@@ -38,6 +38,8 @@ const baseProps = {
   useSgr: false,
   onSendMouse: () => {},
   onAdjustFontSize: () => {},
+  onEnterHistory: () => {},
+  onExitHistory: () => {},
 }
 
 describe('Terminal width sizing', () => {

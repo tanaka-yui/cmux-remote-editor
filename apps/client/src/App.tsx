@@ -254,6 +254,10 @@ function Main() {
     setFontSize((s) => Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, s + delta)))
   }, [])
 
+  // ライブ上端での上スクロールで遡り（履歴）へ、遡り後の最下部復帰でライブへ。Terminal から呼ばれる。
+  const enterHistory = useCallback(() => setHistoryMode(true), [])
+  const exitHistory = useCallback(() => setHistoryMode(false), [])
+
   const [isDesktop, setIsDesktop] = useState(typeof window !== 'undefined' && window.innerWidth >= DESKTOP_BREAKPOINT)
 
   useEffect(() => {
@@ -309,7 +313,6 @@ function Main() {
           status={status}
           lastUpdated={lastUpdated}
           historyMode={historyMode}
-          onToggleHistory={currentSurface && !isBrowserSurface ? () => setHistoryMode((h) => !h) : undefined}
           onOpenSettings={() => setSettingsOpen(true)}
         />
 
@@ -341,6 +344,8 @@ function Main() {
                 sendText(currentSurface, text).catch((err) => console.error('[app] mouse error:', err))
             }}
             onAdjustFontSize={adjustFontSize}
+            onEnterHistory={enterHistory}
+            onExitHistory={exitHistory}
           />
         )}
 

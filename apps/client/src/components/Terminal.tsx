@@ -1,9 +1,10 @@
 import { useTerminal, Terminal as WTerminal } from '@wterm/react'
-import type { CSSProperties, TouchEvent as ReactTouchEvent } from 'react'
+import type { CSSProperties, TouchEvent as ReactTouchEvent, WheelEvent as ReactWheelEvent } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import '@wterm/react/css'
 import { centroid, isTap, touchDistance } from '../lib/multitouch'
 import { type RenderGrid, renderGridToAnsi } from '../lib/render-grid'
+import { isAtBottom, isOverscrollUp } from '../lib/scroll-intent'
 import { encodeClick } from '../lib/sgr-mouse'
 import { cellSize, pixelToCell } from '../lib/terminal-coords'
 
@@ -19,6 +20,10 @@ interface TerminalProps {
   onSendMouse: (text: string) => void
   // 二本指ピンチでのフォントサイズ増減（+1 = 拡大 / -1 = 縮小）。
   onAdjustFontSize: (delta: number) => void
+  // ライブ上端での上方向オーバースクロールで遡り（履歴）へ入る。
+  onEnterHistory: () => void
+  // 遡り中、上へ遡った後に最下部へ戻ったらライブへ復帰する。
+  onExitHistory: () => void
 }
 
 // cmux read-screen emits bare "\n" line feeds; wterm (unlike xterm's convertEol)
@@ -35,6 +40,10 @@ const CLEAR = '\x1b[2J\x1b[3J\x1b[H'
 const PADDING = 8
 // ピンチでフォントを 1 段変えるのに必要な指間距離の変化（px）。
 const PINCH_STEP_PX = 32
+// ライブ上端での「過去方向オーバースクロール」で遡りへ入る閾値。wheel は deltaY(px 相当)、
+// touch はジェスチャー開始からの指の下方向移動量(px)。
+const WHEEL_ENTER_THRESHOLD = 8
+const TOUCH_ENTER_THRESHOLD = 48
 
 // アクティブなタッチジェスチャーの状態。スクロールはブラウザのネイティブに任せ、ここでは
 // タップ/ピンチ/右クリックだけを判定する。閾値を超えて動いた or ピンチした場合は moved=true で、
@@ -51,6 +60,8 @@ export function Terminal({
   useSgr,
   onSendMouse,
   onAdjustFontSize,
+  onEnterHistory,
+  onExitHistory,
 }: TerminalProps) {
   const { ref, write } = useTerminal()
   const gridRef = useRef<RenderGrid | null>(null)
@@ -152,6 +163,32 @@ export function Terminal({
   // 自動で resize() するため、グリッドの幅・行数どおりに表示しデスクトップ cmux と一致させる。
   const useGrid = grid !== null
 
+  // 遡り（grid なし）中の「最下部復帰 → ライブ再開」検知。進入直後は wterm が末尾へ自動追従して
+  // 最下部にいるため、一度上へ離れて（hasScrolledUp）から最下部へ戻った時のみ発火させ即バウンドを防ぐ。
+  // scroll は bubble しないが capture 段なら子（.wterm）の scroll も拾える。実際にスクロールする要素
+  //（.wterm が height:100%+has-scrollback のときは .wterm、伸びた場合は wrapper）の双方に対応できる。
+  const hasScrolledUpRef = useRef(false)
+  useEffect(() => {
+    const wrapper = wrapperRef.current
+    if (useGrid || !wrapper) {
+      hasScrolledUpRef.current = false
+      return
+    }
+    const onScroll = (e: Event) => {
+      const el = e.target as HTMLElement | null
+      if (!el || typeof el.scrollTop !== 'number') return
+      const atBottom = isAtBottom({
+        scrollTop: el.scrollTop,
+        clientHeight: el.clientHeight,
+        scrollHeight: el.scrollHeight,
+      })
+      if (!atBottom) hasScrolledUpRef.current = true
+      else if (hasScrolledUpRef.current) onExitHistory()
+    }
+    wrapper.addEventListener('scroll', onScroll, true)
+    return () => wrapper.removeEventListener('scroll', onScroll, true)
+  }, [useGrid, onExitHistory])
+
   const gestureStateRef = useRef<GestureState | null>(null)
 
   // クリック送信が有効なのは「マウス入力 + SGR + grid（cols/rows 既知）」が揃ったときだけ。
@@ -217,6 +254,21 @@ export function Terminal({
         // 一本指の縦横スクロールはブラウザのネイティブに任せる（preventDefault しないので慣性が残る）。
         // 閾値を超えて動いたらタップではなくスクロールと判定する。
         if (a && !isTap(a.clientX - state.startX, a.clientY - state.startY)) state.moved = true
+        // ライブ中（TUI でマウス取得中は横取りしない）、上端で下方向ドラッグ（=過去を遡る方向）が閾値を
+        // 超えたら遡りへ。deltaY は startY - 現在Y（指が下に動く=負）。
+        if (a && useGrid && !mouseEnabled) {
+          const el = wrapperRef.current
+          if (
+            el &&
+            isOverscrollUp({
+              scrollTop: el.scrollTop,
+              deltaY: state.startY - a.clientY,
+              threshold: TOUCH_ENTER_THRESHOLD,
+            })
+          ) {
+            onEnterHistory()
+          }
+        }
         return
       }
 
@@ -240,7 +292,7 @@ export function Terminal({
       }
       if (!isTap(c.x - state.centerX, c.y - state.centerY)) state.moved = true
     },
-    [onAdjustFontSize],
+    [onAdjustFontSize, useGrid, mouseEnabled, onEnterHistory],
   )
 
   const onTouchEnd = useCallback(
@@ -274,6 +326,18 @@ export function Terminal({
   const onTouchCancel = useCallback(() => {
     gestureStateRef.current = null
   }, [])
+
+  // デスクトップ: ライブ上端での上方向ホイールで遡りへ。
+  const onWheel = useCallback(
+    (e: ReactWheelEvent<HTMLDivElement>) => {
+      if (!useGrid || mouseEnabled) return
+      const el = wrapperRef.current
+      if (el && isOverscrollUp({ scrollTop: el.scrollTop, deltaY: e.deltaY, threshold: WHEEL_ENTER_THRESHOLD })) {
+        onEnterHistory()
+      }
+    },
+    [useGrid, mouseEnabled, onEnterHistory],
+  )
 
   const wrapperStyle: CSSProperties = {
     flex: 1,
@@ -330,6 +394,7 @@ export function Terminal({
       onTouchMove={onTouchMove}
       onTouchEnd={onTouchEnd}
       onTouchCancel={onTouchCancel}
+      onWheel={onWheel}
     >
       <WTerminal
         ref={ref}
