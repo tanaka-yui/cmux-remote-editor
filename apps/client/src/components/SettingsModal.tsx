@@ -4,13 +4,24 @@ import { clampHistoryLines, HISTORY_LINES_MAX, HISTORY_LINES_MIN } from '../lib/
 interface SettingsModalProps {
   open: boolean
   historyLines: number
+  pushSupported: boolean
+  pushEnabled: boolean
+  onTogglePush: (enabled: boolean) => void
   onSave: (lines: number) => void
   onClose: () => void
 }
 
 // 設定モーダル。今は履歴(スクロールバック)行数のみ。開くたびに現在値で編集状態を初期化し、
 // キャンセル/オーバーレイクリックで破棄、保存でクランプして反映する。
-export function SettingsModal({ open, historyLines, onSave, onClose }: SettingsModalProps) {
+export function SettingsModal({
+  open,
+  historyLines,
+  pushSupported,
+  pushEnabled,
+  onTogglePush,
+  onSave,
+  onClose,
+}: SettingsModalProps) {
   // 入力中の文字列(空や途中入力を許容するため number ではなく string で保持)。
   const [draft, setDraft] = useState(String(historyLines))
   useEffect(() => {
@@ -61,6 +72,34 @@ export function SettingsModal({ open, historyLines, onSave, onClose }: SettingsM
         }}
       >
         <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 16 }}>設定</div>
+
+        <div style={{ marginBottom: 18 }}>
+          <label
+            htmlFor="push-enabled"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              fontSize: 13,
+              color: '#aaa',
+            }}
+          >
+            <span>通知（Web Push）</span>
+            <input
+              id="push-enabled"
+              type="checkbox"
+              checked={pushEnabled}
+              disabled={!pushSupported}
+              onChange={(e) => onTogglePush(e.target.checked)}
+              style={{ width: 18, height: 18, accentColor: '#4caf50' }}
+            />
+          </label>
+          {!pushSupported && (
+            <div style={{ fontSize: 12, color: '#777', marginTop: 6 }}>
+              この環境では利用できません（HTTPS のホーム画面追加 PWA・iOS 16.4+ が必要です）。
+            </div>
+          )}
+        </div>
 
         <label htmlFor="history-lines" style={{ display: 'block', fontSize: 13, color: '#aaa', marginBottom: 6 }}>
           履歴バッファ（行数）

@@ -10,9 +10,10 @@ import { Terminal } from './components/Terminal'
 import { TokenGate } from './components/TokenGate'
 import { useCmux } from './hooks/useCmux'
 import { deriveMouseMode } from './lib/mouse-mode'
+import { isPushSubscribed, isPushSupported, subscribeToPush, unsubscribeFromPush } from './lib/push'
 import type { RenderGrid } from './lib/render-grid'
 import { isStaleSurfaceError } from './lib/rpc-error'
-import { loadHistoryLines, saveHistoryLines } from './lib/settings'
+import { loadHistoryLines, loadPushEnabled, saveHistoryLines, savePushEnabled } from './lib/settings'
 import { loadSurfaceScreen, saveSurfaceScreen } from './lib/surface-cache'
 import { encodeKey, isAppCursorMode } from './lib/terminal-keys'
 import { getAuthToken, saveAuthToken } from './lib/token'
@@ -79,6 +80,9 @@ function Main() {
   // 履歴で取得する行数(設定モーダルで調整、localStorage 永続)と、設定モーダルの開閉。
   const [historyLines, setHistoryLines] = useState(loadHistoryLines)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  // Web Push 通知の有効状態。初期は localStorage の楽観値、マウント後に実購読で補正する。
+  const pushSupported = isPushSupported()
+  const [pushEnabled, setPushEnabled] = useState(loadPushEnabled)
   const pollRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined)
   // stale-surface エラーで再取得を試みた surface。同一 surface での再取得ループを防ぐ
   // （surface ごとに 1 回だけ resync する）。ポーリング成功でリセット。
@@ -259,6 +263,36 @@ function Main() {
   const enterHistory = useCallback(() => setHistoryMode(true), [])
   const exitHistory = useCallback(() => setHistoryMode(false), [])
 
+  // Web Push: マウント後に実際の購読状態でトグルを補正する（localStorage の楽観値を上書き）。
+  useEffect(() => {
+    if (!pushSupported) return
+    isPushSubscribed()
+      .then((subscribed) => {
+        setPushEnabled(subscribed)
+        savePushEnabled(subscribed)
+      })
+      .catch(() => {})
+  }, [pushSupported])
+
+  // トグル操作(ユーザージェスチャ)で購読/解除する。許可が下りなければ false に戻す。
+  const togglePush = useCallback((enabled: boolean) => {
+    if (enabled) {
+      subscribeToPush()
+        .then((ok) => {
+          setPushEnabled(ok)
+          savePushEnabled(ok)
+        })
+        .catch((err) => console.error('[app] push subscribe error:', err))
+    } else {
+      unsubscribeFromPush()
+        .then(() => {
+          setPushEnabled(false)
+          savePushEnabled(false)
+        })
+        .catch((err) => console.error('[app] push unsubscribe error:', err))
+    }
+  }, [])
+
   const [isDesktop, setIsDesktop] = useState(typeof window !== 'undefined' && window.innerWidth >= DESKTOP_BREAKPOINT)
 
   useEffect(() => {
@@ -271,6 +305,30 @@ function Main() {
     mq.addEventListener('change', handler)
     return () => mq.removeEventListener('change', handler)
   }, [])
+
+  // プッシュ通知タップ後の遷移。?workspace=<id>(新規ウィンドウ)と SW からの postMessage(既存
+  // ウィンドウ)の両方で、通知の workspace_id に対応するワークスペースを選択する。
+  useEffect(() => {
+    if (workspaces.length === 0) return
+    const navigateTo = (workspaceId: string) => {
+      const target = workspaces.find((w) => w.id === workspaceId)
+      if (target) selectWorkspace(target.ref)
+    }
+    const params = new URLSearchParams(window.location.search)
+    const wid = params.get('workspace')
+    if (wid) {
+      navigateTo(wid)
+      params.delete('workspace')
+      const qs = params.toString()
+      window.history.replaceState(null, '', window.location.pathname + (qs ? `?${qs}` : ''))
+    }
+    const onMessage = (e: MessageEvent) => {
+      const data = (e.data ?? {}) as { type?: string; workspaceId?: string }
+      if (data.type === 'navigate' && typeof data.workspaceId === 'string') navigateTo(data.workspaceId)
+    }
+    navigator.serviceWorker?.addEventListener('message', onMessage)
+    return () => navigator.serviceWorker?.removeEventListener('message', onMessage)
+  }, [workspaces, selectWorkspace])
 
   const currentWs = workspaces.find((w) => w.ref === currentWorkspace)
 
@@ -374,6 +432,9 @@ function Main() {
       <SettingsModal
         open={settingsOpen}
         historyLines={historyLines}
+        pushSupported={pushSupported}
+        pushEnabled={pushEnabled}
+        onTogglePush={togglePush}
         onSave={(lines) => {
           setHistoryLines(lines)
           saveHistoryLines(lines)

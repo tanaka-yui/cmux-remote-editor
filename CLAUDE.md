@@ -56,6 +56,7 @@ cmux ソケットは既定の `cmuxOnly` モードで「cmux の子孫プロセ�
 - `auth.ts` — WS 共有トークン。優先順: 環境変数 `CMUX_REMOTE_TOKEN`（`apps/server/.env` も Bun が自動読込）→ `apps/server/.run/token`（無ければ自動生成・永続化）。比較は `timingSafeEqual`。
 - `socket-path.ts` — cmux ソケットパス解決。`CMUX_SOCKET_PATH` → `last-socket-path` ポインタファイル（XDG state / Application Support）→ 既定パスの順。
 - `health.ts` — `GET /health`。cmux への接続を 1 本使い回す（ポーリングによる接続チャーン防止）。
+- `push/` — Web Push 通知。WS 接続の有無に依らず動く**バックグラウンドポーラー**（`poller.ts`）が専用 cmux 接続（`rpc-connection.ts`、UTF-8 安全な `line-framer.ts` を共用）で `notification.list` を ~10秒間隔ポーリングし、**actionable（Needs input / Permission）かつ未送信の通知のみ**を `web-push`（VAPID）で各購読 endpoint へ送る。`filter.ts`（`isActionable`）/`payload.ts`/`store.ts`（購読・既送信 id を `.run/` に永続）/`send.ts`（410/404 で失効購読を掃除）/`vapid.ts`（`.run/push-vapid.json`）/`routes.ts`（`/push/vapid-public-key`・`/push/subscribe`・`/push/unsubscribe`、共有トークン `Authorization: Bearer` で保護）に分割。起動時に既存通知 id を seed して**バックログを一斉送信しない**。購読が 0 件ならポーラーは停止。env: `CMUX_PUSH_POLL_MS`（既定 10000）/`CMUX_PUSH_SUBJECT`。**dev は HTTP のため Web Push は動かない（secure context 必須）**。
 
 ### クライアント (`apps/client/src/`)
 
@@ -65,7 +66,8 @@ cmux ソケットは既定の `cmuxOnly` モードで「cmux の子孫プロセ�
 - `components/ConnectionIndicator.tsx` / `components/Header.tsx` — **旧 footer(StatusBar) は廃止**。接続状態（ドット＋ラベル、`connected→切断` のみ 2 秒猶予でチラつき防止）とオフライン/履歴の鮮度表示（「最終 HH:MM」/「履歴 · HH:MM時点」）を `ConnectionIndicator` に抽出（`historyMode` を受け取り表示）。**「履歴」ボタンは廃止**し、遡り（履歴）はライブ上端での上スクロールで自動進入する（`Terminal.tsx` が検知）。ペイン名/位置ドットは廃止。Header には**歯車（設定）ボタン**もあり `SettingsModal` を開く。
 - `components/SettingsModal.tsx` / `lib/settings.ts` — 設定モーダル。今は**履歴バッファ（スクロールバック行数）**のみ調整可（スライダー＋数値入力、`HISTORY_LINES_MIN`〜`MAX`=1000〜100000、既定 2000）。`localStorage`(`cmux:history-lines`)に永続し、App のライブ遡り（履歴）取得 `readText(..., { scrollback: true, lines })` に渡る＝**ライブで上スクロールして遡れる行数**。
 - `lib/token.ts` — URL の `?token=` を localStorage に保存（URL は書き換えない）。WS 接続 URL に常に付与。
-- PWA は `vite-plugin-pwa`（autoUpdate）。workbox の `navigateFallbackDenylist` で `/ws`・`/health` を Service Worker から除外している — プロキシ対象のパスを増やす場合はここにも追加が必要。
+- `lib/push.ts` / `sw.ts` — Web Push 購読と Service Worker。**PWA は generateSW から injectManifest へ移行**し（`vite.config.ts` の `strategies: 'injectManifest'`・`srcDir/filename`）、自前 `sw.ts` が `precacheAndRoute` + `NavigationRoute`（SPA フォールバック、`/ws`・`/health` は denylist）に加えて **push / notificationclick** を処理する（タップで既存ウィンドウへ `postMessage({type:'navigate'})`、無ければ `openWindow('/?workspace=<id>')`）。`sw.ts` は DOM lib と衝突するため tsconfig の `exclude` でアプリ `tsc` から外し、vite-plugin-pwa が単独でバンドルする（プロキシ対象パスを増やす場合は SW の denylist に追加）。`lib/push.ts` は許可要求→`pushManager.subscribe`→`POST /push/subscribe`。`SettingsModal` の「通知（Web Push）」トグル（ユーザージェスチャで購読、非対応環境は無効化）で有効化し、`App.tsx` が `?workspace=`／SW メッセージを受けて該当 WS を選択する。
+- PWA は `vite-plugin-pwa`（autoUpdate, **injectManifest**, 自前 SW=`src/sw.ts`）。`registerSW({ immediate: true })`（`main.tsx`）で登録。
 
 ## コードスタイル
 

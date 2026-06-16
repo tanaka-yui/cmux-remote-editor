@@ -6,6 +6,11 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
+      // Custom service worker (src/sw.ts) for push/notificationclick handlers.
+      // The SPA fallback + /ws,/health denylist now live in the SW (NavigationRoute).
+      strategies: "injectManifest",
+      srcDir: "src",
+      filename: "sw.ts",
       registerType: "autoUpdate",
       manifest: {
         name: "cmux Remote",
@@ -20,10 +25,7 @@ export default defineConfig({
           { src: "/icon-512.png", sizes: "512x512", type: "image/png" },
         ],
       },
-      workbox: {
-        // SPA fallback, but never intercept the WebSocket bridge or health check.
-        navigateFallback: "/index.html",
-        navigateFallbackDenylist: [/^\/ws/, /^\/health/],
+      injectManifest: {
         globPatterns: ["**/*.{js,css,html,ico,png,svg,wasm,woff2}"],
       },
     }),

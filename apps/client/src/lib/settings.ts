@@ -22,3 +22,17 @@ export function saveHistoryLines(n: number): void {
   if (typeof localStorage === 'undefined') return
   localStorage.setItem(KEY, String(clampHistoryLines(n)))
 }
+
+// Web Push 通知の有効フラグ。実際の購読状態は SW の pushManager.getSubscription() が真実だが、
+// トグルの楽観的初期表示用に localStorage にも保持する。
+const PUSH_ENABLED_KEY = 'cmux:push-enabled'
+
+export function loadPushEnabled(): boolean {
+  if (typeof localStorage === 'undefined') return false
+  return localStorage.getItem(PUSH_ENABLED_KEY) === 'true'
+}
+
+export function savePushEnabled(enabled: boolean): void {
+  if (typeof localStorage === 'undefined') return
+  localStorage.setItem(PUSH_ENABLED_KEY, enabled ? 'true' : 'false')
+}

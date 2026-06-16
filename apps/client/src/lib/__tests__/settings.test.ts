@@ -1,5 +1,12 @@
-import { describe, expect, it } from 'vitest'
-import { clampHistoryLines, HISTORY_LINES_DEFAULT, HISTORY_LINES_MAX, HISTORY_LINES_MIN } from '../settings'
+import { beforeEach, describe, expect, it } from 'vitest'
+import {
+  clampHistoryLines,
+  HISTORY_LINES_DEFAULT,
+  HISTORY_LINES_MAX,
+  HISTORY_LINES_MIN,
+  loadPushEnabled,
+  savePushEnabled,
+} from '../settings'
 
 describe('clampHistoryLines', () => {
   it('範囲内はそのまま(整数丸め)', () => {
@@ -17,5 +24,20 @@ describe('clampHistoryLines', () => {
   it('非有限値は既定値', () => {
     expect(clampHistoryLines(Number.NaN)).toBe(HISTORY_LINES_DEFAULT)
     expect(clampHistoryLines(Number.POSITIVE_INFINITY)).toBe(HISTORY_LINES_DEFAULT)
+  })
+})
+
+describe('push-enabled 設定', () => {
+  beforeEach(() => localStorage.clear())
+
+  it('既定は false', () => {
+    expect(loadPushEnabled()).toBe(false)
+  })
+
+  it('保存して読み戻せる', () => {
+    savePushEnabled(true)
+    expect(loadPushEnabled()).toBe(true)
+    savePushEnabled(false)
+    expect(loadPushEnabled()).toBe(false)
   })
 })
