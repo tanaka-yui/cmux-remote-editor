@@ -73,11 +73,15 @@ function deriveStatus(n?: CmuxNotification): { label: string; color: string } | 
   const body = n.body.toLowerCase()
   const subtitle = n.subtitle.toLowerCase()
 
-  if (body.includes('waiting for your input') || subtitle === 'waiting') {
-    return { label: 'Needs input', color: '#F39C12' }
-  }
-  if (body.includes('permission')) {
-    return { label: 'Permission', color: '#E74C3C' }
+  // actionable（Needs input / Permission）は未読のみ。cmux で応答すると is_read が立つため、
+  // 既読はバッジを出さない（サーバーの isActionable と一致させ、応答済みの残留を防ぐ）。
+  if (!n.is_read) {
+    if (body.includes('waiting for your input') || subtitle === 'waiting') {
+      return { label: 'Needs input', color: '#F39C12' }
+    }
+    if (body.includes('permission')) {
+      return { label: 'Permission', color: '#E74C3C' }
+    }
   }
   if (subtitle.includes('completed') || body.includes('完了')) {
     return { label: 'Idle', color: '#7f8c8d' }
@@ -102,7 +106,6 @@ function WorkspaceItem({
   onClick: () => void
   onCloseWorkspace: (ref: string) => void
 }) {
-  const [confirming, setConfirming] = useState(false)
   const color = ws.custom_color ?? paletteColor(index)
   const folder = folderName(ws.current_directory)
   const status = deriveStatus(notification)
@@ -251,64 +254,29 @@ function WorkspaceItem({
         )}
       </button>
 
-      {/* Close affordance: inline 2-step confirm (ワークスペース close は破壊的なため) */}
-      {confirming ? (
-        <>
-          <button
-            type="button"
-            onClick={() => onCloseWorkspace(ws.ref)}
-            aria-label="Confirm close"
-            style={{
-              background: 'none',
-              border: 'none',
-              color: '#e74c3c',
-              fontSize: 15,
-              fontWeight: 700,
-              lineHeight: 1,
-              padding: '0 6px',
-              cursor: 'pointer',
-              flexShrink: 0,
-            }}
-          >
-            &#10003;
-          </button>
-          <button
-            type="button"
-            onClick={() => setConfirming(false)}
-            aria-label="Cancel close"
-            style={{
-              background: 'none',
-              border: 'none',
-              color: '#888',
-              fontSize: 15,
-              lineHeight: 1,
-              padding: '0 8px 0 2px',
-              cursor: 'pointer',
-              flexShrink: 0,
-            }}
-          >
-            &times;
-          </button>
-        </>
-      ) : (
-        <button
-          type="button"
-          onClick={() => setConfirming(true)}
-          aria-label="Close workspace"
-          style={{
-            background: 'none',
-            border: 'none',
-            color: '#777',
-            fontSize: 16,
-            lineHeight: 1,
-            padding: '0 10px',
-            cursor: 'pointer',
-            flexShrink: 0,
-          }}
-        >
-          &times;
-        </button>
-      )}
+      {/* Close affordance: タップで確認ダイアログ → OK のみ close（破壊的操作のため確認を挟む）。 */}
+      <button
+        type="button"
+        onClick={() => {
+          if (window.confirm(`ワークスペース「${ws.title || ws.ref}」を閉じますか？`)) onCloseWorkspace(ws.ref)
+        }}
+        aria-label="Close workspace"
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: 44,
+          background: 'none',
+          border: 'none',
+          color: '#888',
+          fontSize: 22,
+          lineHeight: 1,
+          cursor: 'pointer',
+          flexShrink: 0,
+        }}
+      >
+        &times;
+      </button>
     </div>
   )
 }

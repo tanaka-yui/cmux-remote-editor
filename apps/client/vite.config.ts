@@ -40,6 +40,9 @@ export default defineConfig({
       "/health": {
         target: "http://localhost:48701",
       },
+      "/push": {
+        target: "http://localhost:48701",
+      },
     },
   },
 });

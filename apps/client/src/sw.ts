@@ -7,8 +7,10 @@ declare const self: ServiceWorkerGlobalScope & { __WB_MANIFEST: (string | Precac
 
 precacheAndRoute(self.__WB_MANIFEST)
 
-// SPA フォールバック。ただし WebSocket ブリッジ(/ws)とヘルスチェック(/health)は横取りしない。
-registerRoute(new NavigationRoute(createHandlerBoundToURL('index.html'), { denylist: [/^\/ws/, /^\/health/] }))
+// SPA フォールバック。ただし WS ブリッジ(/ws)・ヘルスチェック(/health)・Web Push API(/push)は横取りしない。
+registerRoute(
+  new NavigationRoute(createHandlerBoundToURL('index.html'), { denylist: [/^\/ws/, /^\/health/, /^\/push/] }),
+)
 
 interface PushData {
   workspace_id?: string
