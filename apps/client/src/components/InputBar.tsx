@@ -184,8 +184,9 @@ export function InputBar({ disabled, onSendText, onSendKey, onAdjustFontSize }: 
         paddingTop: 6,
         paddingLeft: 8,
         paddingRight: 8,
-        // footer 廃止で最下部要素になったため、ホームインジケータ(iPhone)に被らないよう safe-area を加算。
-        paddingBottom: 'calc(6px + env(safe-area-inset-bottom))',
+        // footer 廃止で最下部要素になったため、ホームインジケータ(iPhone)に被らないよう safe-area を確保。
+        // max() で「6px か inset の大きい方」にする（フル inset への +6px 加算は下余白が空きすぎるため）。
+        paddingBottom: 'max(6px, env(safe-area-inset-bottom))',
         backgroundColor: '#16213e',
         borderTop: '1px solid #2a2a4e',
         flexShrink: 0,

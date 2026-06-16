@@ -19,6 +19,7 @@ import { encodeKey, isAppCursorMode } from './lib/terminal-keys'
 import { getAuthToken, saveAuthToken } from './lib/token'
 
 const POLL_INTERVAL = 1000
+const NOTIF_POLL_INTERVAL = 10000
 const INIT_RETRY_INTERVAL = 3000
 const MIN_FONT_SIZE = 9
 const MAX_FONT_SIZE = 28
@@ -117,6 +118,17 @@ function Main() {
       if (retryTimer) clearTimeout(retryTimer)
     }
   }, [status, listWorkspaces, listNotifications])
+
+  // 通知バッジ(Needs input / Permission)の鮮度を保つための定期ポーリング。init で 1 回だけ
+  // 取得すると、cmux 側で応答して is_read が立ってもスナップショットが凍結し、応答済みの
+  // バッジが残り続ける。接続中は notification.list を再取得して is_read 遷移を反映させる。
+  useEffect(() => {
+    if (status !== 'connected') return
+    const timer = setInterval(() => {
+      listNotifications().catch(() => {})
+    }, NOTIF_POLL_INTERVAL)
+    return () => clearInterval(timer)
+  }, [status, listNotifications])
 
   // Re-fetch panes and surfaces when the (app-selected) workspace changes — always
   // scoped to currentWorkspace so other workspaces' surfaces never leak in. Retried

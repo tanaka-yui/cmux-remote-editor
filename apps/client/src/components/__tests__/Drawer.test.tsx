@@ -2,19 +2,19 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
-import type { Workspace } from '../../lib/cmux-rpc'
+import type { CmuxNotification, Workspace } from '../../lib/cmux-rpc'
 import { Drawer } from '../Drawer'
 
 const ws: Workspace = { id: 'w1', ref: 'workspace:A', title: 'Alpha', index: 0 }
 
-function renderDrawer() {
+function renderDrawer(notifications: CmuxNotification[] = []) {
   const onCloseWorkspace = vi.fn()
   render(
     <Drawer
       open
       workspaces={[ws]}
       currentWorkspace="workspace:A"
-      notifications={[]}
+      notifications={notifications}
       onSelect={() => {}}
       onCloseWorkspace={onCloseWorkspace}
       onNewWorkspace={vi.fn().mockResolvedValue(undefined)}
@@ -24,26 +24,43 @@ function renderDrawer() {
   return onCloseWorkspace
 }
 
-describe('Drawer close workspace (2 段階確認)', () => {
-  it('× を 1 回押しただけでは onCloseWorkspace を呼ばない', () => {
-    const onCloseWorkspace = renderDrawer()
-    fireEvent.click(screen.getByLabelText('Close workspace'))
-    expect(onCloseWorkspace).not.toHaveBeenCalled()
-  })
+const waitingUnread: CmuxNotification = {
+  id: 'n1',
+  title: 'Alpha',
+  subtitle: 'waiting',
+  body: 'waiting for your input',
+  workspace_id: 'w1',
+  surface_id: 's1',
+  is_read: false,
+}
 
-  it('× → 確定で onCloseWorkspace(ref) を呼ぶ', () => {
+describe('Drawer close workspace (確認ダイアログ)', () => {
+  it('× → confirm OK で onCloseWorkspace(ref) を呼ぶ', () => {
     const onCloseWorkspace = renderDrawer()
+    const spy = vi.spyOn(window, 'confirm').mockReturnValue(true)
     fireEvent.click(screen.getByLabelText('Close workspace'))
-    fireEvent.click(screen.getByLabelText('Confirm close'))
     expect(onCloseWorkspace).toHaveBeenCalledWith('workspace:A')
+    spy.mockRestore()
   })
 
-  it('× → 取消で onCloseWorkspace を呼ばず、閉じるボタンへ戻る', () => {
+  it('× → confirm キャンセルで onCloseWorkspace を呼ばない', () => {
     const onCloseWorkspace = renderDrawer()
+    const spy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     fireEvent.click(screen.getByLabelText('Close workspace'))
-    fireEvent.click(screen.getByLabelText('Cancel close'))
     expect(onCloseWorkspace).not.toHaveBeenCalled()
-    expect(screen.getByLabelText('Close workspace')).toBeDefined()
+    spy.mockRestore()
+  })
+})
+
+describe('Drawer status badge (is_read ゲート)', () => {
+  it('未読の waiting 通知は Needs input を表示する', () => {
+    renderDrawer([waitingUnread])
+    expect(screen.getByText('Needs input')).toBeDefined()
+  })
+
+  it('既読の waiting 通知は Needs input を表示しない（cmux で応答済み）', () => {
+    renderDrawer([{ ...waitingUnread, is_read: true }])
+    expect(screen.queryByText('Needs input')).toBeNull()
   })
 })
 
