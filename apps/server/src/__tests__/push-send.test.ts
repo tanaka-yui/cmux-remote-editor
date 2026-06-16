@@ -45,7 +45,10 @@ describe('createSender', () => {
     const keys = webpush.generateVAPIDKeys()
     webpush.setVapidDetails('mailto:test@example.com', keys.publicKey, keys.privateKey)
     // payload=null なら暗号化は行われないため keys はダミーで良い（型上は keys が必須）。
-    const details = webpush.generateRequestDetails({ endpoint: 'https://example.com/ep', keys: { p256dh: 'p', auth: 'a' } }, null)
+    const details = webpush.generateRequestDetails(
+      { endpoint: 'https://example.com/ep', keys: { p256dh: 'p', auth: 'a' } },
+      null,
+    )
     expect(details.method).toBe('POST')
     expect(details.endpoint).toBe('https://example.com/ep')
   })
