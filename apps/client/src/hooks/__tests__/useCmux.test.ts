@@ -113,6 +113,21 @@ describe('useCmux surface RPC params', () => {
     expect(req?.params).not.toHaveProperty('surface_ref')
   })
 
+  it('readGrid は render_grid が無い（端末未起動で停止中）場合 null を返す', async () => {
+    // タブだけ開いて zsh が起動していない停止状態では terminal.replay が render_grid を返さない。
+    // undefined をそのまま返すと App→Terminal で grid.columns を評価して落ちる（useGrid の
+    // `!== null` 厳密比較を undefined がすり抜ける）ため、ここで null に正規化する。
+    hoisted.responses['terminal.replay'] = { surface_id: 'surface:7' }
+    const { result } = renderHook(() => useCmux())
+
+    let got: unknown = 'sentinel'
+    await act(async () => {
+      got = await result.current.readGrid('surface:7')
+    })
+
+    expect(got).toBeNull()
+  })
+
   it('cmux エラー時は code を載せた Error で reject する（App の stale-surface 判定に使う）', async () => {
     hoisted.errors['terminal.replay'] = { code: 'invalid_params', message: 'Missing or invalid terminal_id' }
     const { result } = renderHook(() => useCmux())

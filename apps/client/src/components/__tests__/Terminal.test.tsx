@@ -56,6 +56,16 @@ describe('Terminal width sizing', () => {
     const style = wtermProps.current.style as CSSProperties
     expect(style.width).toBeUndefined()
   })
+
+  it('grid が undefined（停止端末で replay が空）でも落ちず、プレーンテキスト扱いにする', () => {
+    // render_grid 欠落で grid が undefined になっても null と同様「グリッド無し」に扱う。
+    // `grid !== null` の厳密比較だと undefined がすり抜け cols={grid.columns} で落ちる回帰を防ぐ。
+    // 型は RenderGrid | null だが、実機では undefined が混入し得るためキャストで再現する。
+    const undefinedGrid = undefined as unknown as RenderGrid | null
+    render(<Terminal grid={undefinedGrid} {...baseProps} content="hello" />)
+    const style = wtermProps.current.style as CSSProperties
+    expect(style.width).toBeUndefined()
+  })
 })
 
 describe('Terminal history→live scroll', () => {

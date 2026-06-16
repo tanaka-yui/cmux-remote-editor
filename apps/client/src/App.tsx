@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { BrowserView } from './components/BrowserView'
 import { DESKTOP_BREAKPOINT, Drawer, SIDEBAR_WIDTH } from './components/Drawer'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import { Header } from './components/Header'
 import { InputBar } from './components/InputBar'
 import { SettingsModal } from './components/SettingsModal'
@@ -185,7 +186,8 @@ function Main() {
         const now = Date.now()
         setLastUpdated(now)
         // オフライン保持用に最後のグリッドを永続化（text/scrollback は引き継がれる）。
-        saveSurfaceScreen(currentSurface, { grid, updatedAt: now })
+        // 停止端末で grid が null のときは undefined を渡し、直近の正常グリッドを潰さず引き継ぐ。
+        saveSurfaceScreen(currentSurface, { grid: grid ?? undefined, updatedAt: now })
         staleResyncRef.current = null
       } catch (err) {
         // currentSurface が「閉じられた surface」を指すと cmux は terminal.replay に
@@ -414,24 +416,29 @@ function Main() {
           }}
         />
 
-        {isBrowserSurface ? (
-          <BrowserView url={currentSurfaceInfo?.url ?? ''} title={currentSurfaceInfo?.title ?? ''} />
-        ) : (
-          <Terminal
-            grid={historyMode ? null : termGrid}
-            content={termContent}
-            fontSize={fontSize}
-            mouseEnabled={mouseMode.mouseEnabled}
-            useSgr={mouseMode.useSgr}
-            onSendMouse={(text) => {
-              if (currentSurface)
-                sendText(currentSurface, text).catch((err) => console.error('[app] mouse error:', err))
-            }}
-            onAdjustFontSize={adjustFontSize}
-            onEnterHistory={enterHistory}
-            onExitHistory={exitHistory}
-          />
-        )}
+        {/* コンテンツ領域だけをエラー境界で囲む。停止端末等で描画が落ちても枠の TabBar/Header/InputBar
+            は生き残り、別タブへ切替/このタブを閉じるで復帰できる（最上位境界だと全体が畳まれ、再読み込み
+            でも壊れた surface が復元され逃げ場が消える）。resetKey=currentSurface でタブ切替時に自動回復。 */}
+        <ErrorBoundary inline resetKey={currentSurface}>
+          {isBrowserSurface ? (
+            <BrowserView url={currentSurfaceInfo?.url ?? ''} title={currentSurfaceInfo?.title ?? ''} />
+          ) : (
+            <Terminal
+              grid={historyMode ? null : termGrid}
+              content={termContent}
+              fontSize={fontSize}
+              mouseEnabled={mouseMode.mouseEnabled}
+              useSgr={mouseMode.useSgr}
+              onSendMouse={(text) => {
+                if (currentSurface)
+                  sendText(currentSurface, text).catch((err) => console.error('[app] mouse error:', err))
+              }}
+              onAdjustFontSize={adjustFontSize}
+              onEnterHistory={enterHistory}
+              onExitHistory={exitHistory}
+            />
+          )}
+        </ErrorBoundary>
 
         {/* InputBar の下にあった StatusBar(footer) は廃止。接続状態と鮮度表示は Header へ移設した。 */}
         <InputBar

@@ -9,14 +9,22 @@ const cmux = vi.hoisted(() => ({
   // biome-ignore lint/suspicious/noExplicitAny: テスト用のフック戻り値スタブ
   state: {} as any,
   listSurfaceCalls: [] as (string | undefined)[],
+  // true のとき Terminal がレンダリング例外を投げる（停止端末の grid.columns クラッシュを再現）。
+  terminalThrows: false,
 }))
 
 vi.mock('../hooks/useCmux', () => ({ useCmux: () => cmux.state }))
-vi.mock('../components/Terminal', () => ({ Terminal: () => null }))
+vi.mock('../components/Terminal', () => ({
+  Terminal: () => {
+    if (cmux.terminalThrows) throw new Error("undefined is not an object (evaluating 'e.columns')")
+    return null
+  },
+}))
 vi.mock('../lib/token', () => ({ getAuthToken: () => 'tok', saveAuthToken: () => {} }))
 
 beforeEach(() => {
   cmux.listSurfaceCalls = []
+  cmux.terminalThrows = false
   // jsdom は matchMedia 未実装のためスタブする。
   window.matchMedia = vi.fn().mockReturnValue({
     matches: false,
@@ -61,5 +69,24 @@ describe('App surface フェッチ', () => {
     // workspaceRef 未指定（undefined）の呼び出しがあると、サーバーは全ワークスペースの
     // surface を返してしまい、他ワークスペースのタブが混入する。
     expect(cmux.listSurfaceCalls.every((ref) => ref === 'workspace:A')).toBe(true)
+  })
+})
+
+describe('App コンテンツのエラー境界分離', () => {
+  it('Terminal の描画エラーでも TabBar は残り、別タブ選択/タブを閉じるで復帰できる', () => {
+    // 停止端末(zsh 未起動)などで Terminal がレンダリング例外を投げても、エラー境界をコンテンツ領域
+    // だけに分離してあるので TabBar は生き続ける。最上位境界がアプリ全体を畳むと、再読み込みでも
+    // 同じ surface が復元されて即再クラッシュし逃げ場が消えるための回帰ガード。
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    cmux.terminalThrows = true
+    cmux.state.surfaces = [{ ref: 'surface:1', pane_ref: 'pane:1', title: 't1', type: 'terminal', index: 0 }]
+    cmux.state.currentSurface = 'surface:1'
+
+    const { getByLabelText } = render(<App />)
+
+    // 新規タブと当該タブの「閉じる」が残る = 別タブへ切替/このタブを閉じるが可能。
+    expect(getByLabelText('New tab')).toBeTruthy()
+    expect(getByLabelText('Close tab')).toBeTruthy()
+    errSpy.mockRestore()
   })
 })

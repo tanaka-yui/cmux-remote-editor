@@ -240,13 +240,16 @@ export function useCmux() {
   )
 
   const readGrid = useCallback(
-    async (surfaceRef?: string): Promise<RenderGrid> => {
+    async (surfaceRef?: string): Promise<RenderGrid | null> => {
       // terminal.replay は render_grid（色/属性/カーソル付きグリッド）を返す。read_text と
       // 同じく surface_id を読む（surface_ref はフォーカス中へフォールバックする）。
       const params: Record<string, unknown> = {}
       if (surfaceRef) params.surface_id = surfaceRef
-      const result = (await rpc('terminal.replay', params)) as { render_grid: RenderGrid }
-      return result.render_grid
+      const result = (await rpc('terminal.replay', params)) as { render_grid?: RenderGrid | null }
+      // タブだけ開いて zsh が起動していない停止端末では render_grid が欠落し得る。null へ正規化して
+      // 呼び出し側（Terminal の useGrid 判定）が「グリッド無し」として扱えるようにする（undefined だと
+      // useGrid の `!= null` 判定をすり抜けないが、型・実値の両面で null に揃えて安全側に倒す）。
+      return result.render_grid ?? null
     },
     [rpc],
   )

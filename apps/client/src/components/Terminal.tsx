@@ -161,7 +161,9 @@ export function Terminal({
 
   // grid モードはネイティブ寸法に固定（autoResize 廃止）。@wterm は cols/rows prop 変化時に
   // 自動で resize() するため、グリッドの幅・行数どおりに表示しデスクトップ cmux と一致させる。
-  const useGrid = grid !== null
+  // `!= null` で null と undefined の両方を「グリッド無し」とする。`!== null` だと停止端末で
+  // render_grid 欠落→undefined になった grid が cols={grid.columns} まで到達して落ちる。
+  const useGrid = grid != null
 
   // 遡り（grid なし）中の「最下部復帰 → ライブ再開」検知。進入直後は wterm が末尾へ自動追従して
   // 最下部にいるため、一度上へ離れて（hasScrolledUp）から最下部へ戻った時のみ発火させ即バウンドを防ぐ。
