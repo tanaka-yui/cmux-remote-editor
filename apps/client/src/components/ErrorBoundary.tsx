@@ -49,8 +49,8 @@ export class ErrorBoundary extends Component<Props, State> {
       justifyContent: 'center',
       gap: 16,
       padding: 24,
-      backgroundColor: '#1a1a2e',
-      color: '#e0e0e0',
+      backgroundColor: 'var(--color-bg)',
+      color: 'var(--color-text)',
       textAlign: 'center',
       // inline はコンテンツ領域（flex 列の残り）を埋め、全画面版はビューポート全高を覆う。
       ...(inline ? { flex: 1, minHeight: 0 } : { height: 'var(--app-height)' }),
@@ -78,9 +78,9 @@ export class ErrorBoundary extends Component<Props, State> {
             style={{
               padding: '10px 20px',
               fontSize: 14,
-              color: '#e0e0e0',
-              backgroundColor: '#2a2a4a',
-              border: '1px solid #44446a',
+              color: 'var(--color-text)',
+              backgroundColor: 'var(--color-surface)',
+              border: '1px solid var(--color-border)',
               borderRadius: 8,
               cursor: 'pointer',
             }}

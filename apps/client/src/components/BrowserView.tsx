@@ -21,22 +21,22 @@ export function BrowserView({ url, title }: BrowserViewProps) {
     gap: 16,
     padding: 24,
     overflow: 'hidden',
-    backgroundColor: '#1a1a2e',
+    backgroundColor: 'var(--color-bg)',
     textAlign: 'center',
   }
 
   if (!url) {
     return (
       <div style={wrapperStyle}>
-        <div style={{ color: '#8a8aa0' }}>URL を取得できませんでした</div>
+        <div style={{ color: 'var(--color-text-muted)' }}>URL を取得できませんでした</div>
       </div>
     )
   }
 
   return (
     <div style={wrapperStyle}>
-      <div style={{ fontSize: 20, fontWeight: 600, color: '#e0e0e0', overflowWrap: 'anywhere' }}>{title}</div>
-      <div style={{ fontSize: 12, color: '#8a8aa0', overflowWrap: 'anywhere' }}>{url}</div>
+      <div style={{ fontSize: 20, fontWeight: 600, color: 'var(--color-text)', overflowWrap: 'anywhere' }}>{title}</div>
+      <div style={{ fontSize: 12, color: 'var(--color-text-muted)', overflowWrap: 'anywhere' }}>{url}</div>
       <a
         href={url}
         target="_blank"
@@ -44,8 +44,8 @@ export function BrowserView({ url, title }: BrowserViewProps) {
         style={{
           padding: '12px 24px',
           borderRadius: 8,
-          backgroundColor: '#0f3460',
-          color: '#4fc3f7',
+          backgroundColor: 'var(--color-link-bg)',
+          color: 'var(--color-link)',
           textDecoration: 'none',
           fontSize: 16,
         }}
