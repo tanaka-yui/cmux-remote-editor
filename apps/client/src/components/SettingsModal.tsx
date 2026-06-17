@@ -102,7 +102,7 @@ export function SettingsModal({
               type="single"
               value={themeSetting}
               onValueChange={(v) => {
-                if (v) onThemeChange(v as ThemeSetting)
+                if (v && THEME_OPTIONS.some((o) => o.value === v)) onThemeChange(v as ThemeSetting)
               }}
               style={{ display: 'flex', gap: 6 }}
             >
