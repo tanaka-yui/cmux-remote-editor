@@ -30,6 +30,9 @@ const DEFAULT_FONT_SIZE = 13
 export function App() {
   // テーマはトークンゲート画面でも効かせるため、token 判定より前で適用する。
   const theme = useTheme()
+  // iOS home-screen PWAs launch at the manifest start_url and use a storage
+  // container separate from Safari, so the ?token= bootstrap never reaches
+  // them — collect the token in-app when none is available.
   const [token, setToken] = useState(getAuthToken)
 
   if (!token) {

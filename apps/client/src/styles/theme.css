@@ -1,4 +1,5 @@
 /* 配色の単一情報源。dark は現状の配色を 1:1 維持、light は派生値。data-theme は html(:root)。 */
+:root,
 :root[data-theme="dark"] {
   --color-bg: #1a1a2e;
   --color-surface: #16213e;
