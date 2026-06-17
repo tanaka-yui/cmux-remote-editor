@@ -10,6 +10,7 @@ import { TabBar } from './components/TabBar'
 import { Terminal } from './components/Terminal'
 import { TokenGate } from './components/TokenGate'
 import { useCmux } from './hooks/useCmux'
+import { useTheme } from './hooks/useTheme'
 import { deriveMouseMode } from './lib/mouse-mode'
 import { isPushSubscribed, isPushSupported, subscribeToPush, unsubscribeFromPush } from './lib/push'
 import type { RenderGrid } from './lib/render-grid'
@@ -17,8 +18,6 @@ import { isStaleSurfaceError } from './lib/rpc-error'
 import { loadHistoryLines, loadPushEnabled, saveHistoryLines, savePushEnabled } from './lib/settings'
 import { loadSurfaceScreen, saveSurfaceScreen } from './lib/surface-cache'
 import { encodeKey, isAppCursorMode } from './lib/terminal-keys'
-import type { ThemeSetting } from './lib/theme'
-import { applyTheme, loadTheme, resolveTheme, saveTheme } from './lib/theme'
 import { getAuthToken, saveAuthToken } from './lib/token'
 
 const POLL_INTERVAL = 1000
@@ -29,9 +28,8 @@ const MAX_FONT_SIZE = 28
 const DEFAULT_FONT_SIZE = 13
 
 export function App() {
-  // iOS home-screen PWAs launch at the manifest start_url and use a storage
-  // container separate from Safari, so the ?token= bootstrap never reaches
-  // them — collect the token in-app when none is available.
+  // テーマはトークンゲート画面でも効かせるため、token 判定より前で適用する。
+  const theme = useTheme()
   const [token, setToken] = useState(getAuthToken)
 
   if (!token) {
@@ -45,10 +43,10 @@ export function App() {
     )
   }
 
-  return <Main />
+  return <Main theme={theme} />
 }
 
-function Main() {
+function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
   const {
     status,
     workspaces,
@@ -84,7 +82,6 @@ function Main() {
   // 履歴で取得する行数(設定モーダルで調整、localStorage 永続)と、設定モーダルの開閉。
   const [historyLines, setHistoryLines] = useState(loadHistoryLines)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [themeSetting, setThemeSetting] = useState<ThemeSetting>(loadTheme)
   // Web Push 通知の有効状態。初期は localStorage の楽観値、マウント後に実購読で補正する。
   const pushSupported = isPushSupported()
   const [pushEnabled, setPushEnabled] = useState(loadPushEnabled)
@@ -362,8 +359,8 @@ function Main() {
       style={{
         display: 'flex',
         height: 'var(--app-height)',
-        backgroundColor: '#1a1a2e',
-        color: '#e0e0e0',
+        backgroundColor: 'var(--color-bg)',
+        color: 'var(--color-text)',
         overflow: 'hidden',
       }}
     >
@@ -461,12 +458,8 @@ function Main() {
 
       <SettingsModal
         open={settingsOpen}
-        themeSetting={themeSetting}
-        onThemeChange={(t) => {
-          setThemeSetting(t)
-          saveTheme(t)
-          applyTheme(resolveTheme(t))
-        }}
+        themeSetting={theme.setting}
+        onThemeChange={theme.setTheme}
         historyLines={historyLines}
         pushSupported={pushSupported}
         pushEnabled={pushEnabled}
