@@ -1,0 +1,52 @@
+/* 配色の単一情報源。dark は現状の配色を 1:1 維持、light は派生値。data-theme は html(:root)。 */
+:root[data-theme='dark'] {
+  --color-bg: #1a1a2e;
+  --color-surface: #16213e;
+  --color-sidebar: #0f1729;
+  --color-control-bg: #1a1a2e;
+  --color-border: #2a2a4e;
+  --color-border-subtle: #1e2a42;
+  --color-tab-group-border: #4a4a6e;
+  --color-text: #e0e0e0;
+  --color-text-muted: #aaaaaa;
+  --color-text-subtle: #777777;
+  --color-accent: #4caf50;
+  --color-accent-contrast: #ffffff;
+  --color-accent-strong: #2e5cb8;
+  --color-danger: #e74c3c;
+  --color-warning: #f39c12;
+  --color-scrim: rgba(0, 0, 0, 0.6);
+  --color-selected: rgba(255, 255, 255, 0.08);
+  --color-key-armed-bg: #4a5a9a;
+  --color-key-armed-border: #6a7ace;
+  --color-key-armed-text: #ffffff;
+  --color-terminal-bg: #1a1a2e;
+  --color-link: #4fc3f7;
+  --color-link-bg: #0f3460;
+}
+
+:root[data-theme='light'] {
+  --color-bg: #f4f5f7;
+  --color-surface: #ffffff;
+  --color-sidebar: #f0f1f4;
+  --color-control-bg: #ffffff;
+  --color-border: #d8dbe0;
+  --color-border-subtle: #e6e8ec;
+  --color-tab-group-border: #c4c8d0;
+  --color-text: #1a1a2e;
+  --color-text-muted: #5b6370;
+  --color-text-subtle: #8a909a;
+  --color-accent: #43a047;
+  --color-accent-contrast: #ffffff;
+  --color-accent-strong: #2e5cb8;
+  --color-danger: #d32f2f;
+  --color-warning: #e08600;
+  --color-scrim: rgba(0, 0, 0, 0.35);
+  --color-selected: rgba(0, 0, 0, 0.06);
+  --color-key-armed-bg: #dbe2ff;
+  --color-key-armed-border: #9db0ff;
+  --color-key-armed-text: #1a1a2e;
+  --color-terminal-bg: #1a1a2e;
+  --color-link: #1565c0;
+  --color-link-bg: #e3f0fc;
+}

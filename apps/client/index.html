@@ -6,6 +6,20 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="theme-color" content="#1a1a2e" />
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem('cmux:theme')
+          var resolved =
+            t === 'light' || t === 'dark'
+              ? t
+              : !window.matchMedia || window.matchMedia('(prefers-color-scheme: dark)').matches
+                ? 'dark'
+                : 'light'
+          document.documentElement.setAttribute('data-theme', resolved)
+        } catch (e) {}
+      })()
+    </script>
     <title>cmux Remote</title>
   </head>
   <body>
