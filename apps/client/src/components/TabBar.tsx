@@ -1,3 +1,5 @@
+import { Plus, X } from 'lucide-react'
+
 import type { Surface } from '../lib/cmux-rpc'
 
 interface TabBarProps {
@@ -20,8 +22,8 @@ export function TabBar({ surfaces, currentSurface, onSelect, onClose, onCreate }
         display: 'flex',
         alignItems: 'stretch',
         height: 38,
-        backgroundColor: '#16213e',
-        borderBottom: '1px solid #2a2a4e',
+        backgroundColor: 'var(--color-surface)',
+        borderBottom: '1px solid var(--color-border)',
         flexShrink: 0,
         overflowX: 'auto',
       }}
@@ -39,10 +41,10 @@ export function TabBar({ surfaces, currentSurface, onSelect, onClose, onCreate }
               gap: 6,
               padding: '0 10px',
               maxWidth: 180,
-              borderRight: '1px solid #2a2a4e',
-              borderLeft: newPaneGroup ? '2px solid #4a4a6e' : undefined,
-              backgroundColor: active ? '#1a1a2e' : 'transparent',
-              borderBottom: active ? '2px solid #4caf50' : '2px solid transparent',
+              borderRight: '1px solid var(--color-border)',
+              borderLeft: newPaneGroup ? '2px solid var(--color-tab-group-border)' : undefined,
+              backgroundColor: active ? 'var(--color-bg)' : 'transparent',
+              borderBottom: active ? '2px solid var(--color-accent)' : '2px solid transparent',
               cursor: 'pointer',
               whiteSpace: 'nowrap',
             }}
@@ -53,7 +55,7 @@ export function TabBar({ surfaces, currentSurface, onSelect, onClose, onCreate }
               style={{
                 background: 'none',
                 border: 'none',
-                color: active ? '#e0e0e0' : '#aaa',
+                color: active ? 'var(--color-text)' : 'var(--color-text-muted)',
                 fontSize: 13,
                 padding: 0,
                 cursor: 'pointer',
@@ -72,14 +74,14 @@ export function TabBar({ surfaces, currentSurface, onSelect, onClose, onCreate }
               style={{
                 background: 'none',
                 border: 'none',
-                color: '#777',
-                fontSize: 16,
-                lineHeight: 1,
+                color: 'var(--color-text-subtle)',
                 padding: '0 2px',
                 cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
               }}
             >
-              &times;
+              <X size={14} />
             </button>
           </div>
         )
@@ -91,15 +93,15 @@ export function TabBar({ surfaces, currentSurface, onSelect, onClose, onCreate }
         style={{
           background: 'none',
           border: 'none',
-          color: '#aaa',
-          fontSize: 20,
-          lineHeight: 1,
+          color: 'var(--color-text-muted)',
           padding: '0 14px',
           cursor: 'pointer',
           flexShrink: 0,
+          display: 'flex',
+          alignItems: 'center',
         }}
       >
-        +
+        <Plus size={18} />
       </button>
     </div>
   )
