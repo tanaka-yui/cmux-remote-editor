@@ -1,4 +1,4 @@
-@import './theme.css';
+@import "./theme.css";
 
 *,
 *::before,
@@ -47,16 +47,16 @@ body {
 }
 
 /* radix Dialog 化したモバイル Drawer のスライド/フェード（data-state 駆動）。 */
-.drawer-overlay[data-state='open'] {
+.drawer-overlay[data-state="open"] {
   animation: cmux-fade-in 0.2s ease-out;
 }
-.drawer-overlay[data-state='closed'] {
+.drawer-overlay[data-state="closed"] {
   animation: cmux-fade-out 0.2s ease-out;
 }
-.drawer-content[data-state='open'] {
+.drawer-content[data-state="open"] {
   animation: cmux-drawer-in 0.2s ease-out;
 }
-.drawer-content[data-state='closed'] {
+.drawer-content[data-state="closed"] {
   animation: cmux-drawer-out 0.2s ease-out;
 }
 @keyframes cmux-fade-in {

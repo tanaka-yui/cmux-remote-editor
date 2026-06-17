@@ -17,6 +17,8 @@ import { isStaleSurfaceError } from './lib/rpc-error'
 import { loadHistoryLines, loadPushEnabled, saveHistoryLines, savePushEnabled } from './lib/settings'
 import { loadSurfaceScreen, saveSurfaceScreen } from './lib/surface-cache'
 import { encodeKey, isAppCursorMode } from './lib/terminal-keys'
+import type { ThemeSetting } from './lib/theme'
+import { applyTheme, loadTheme, resolveTheme, saveTheme } from './lib/theme'
 import { getAuthToken, saveAuthToken } from './lib/token'
 
 const POLL_INTERVAL = 1000
@@ -82,6 +84,7 @@ function Main() {
   // 履歴で取得する行数(設定モーダルで調整、localStorage 永続)と、設定モーダルの開閉。
   const [historyLines, setHistoryLines] = useState(loadHistoryLines)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [themeSetting, setThemeSetting] = useState<ThemeSetting>(loadTheme)
   // Web Push 通知の有効状態。初期は localStorage の楽観値、マウント後に実購読で補正する。
   const pushSupported = isPushSupported()
   const [pushEnabled, setPushEnabled] = useState(loadPushEnabled)
@@ -458,6 +461,12 @@ function Main() {
 
       <SettingsModal
         open={settingsOpen}
+        themeSetting={themeSetting}
+        onThemeChange={(t) => {
+          setThemeSetting(t)
+          saveTheme(t)
+          applyTheme(resolveTheme(t))
+        }}
         historyLines={historyLines}
         pushSupported={pushSupported}
         pushEnabled={pushEnabled}
