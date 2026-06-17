@@ -35,20 +35,19 @@ const waitingUnread: CmuxNotification = {
 }
 
 describe('Drawer close workspace (確認ダイアログ)', () => {
-  it('× → confirm OK で onCloseWorkspace(ref) を呼ぶ', () => {
+  it('× → 確認ダイアログで「閉じる」を押すと onCloseWorkspace(ref) を呼ぶ', () => {
     const onCloseWorkspace = renderDrawer()
-    const spy = vi.spyOn(window, 'confirm').mockReturnValue(true)
     fireEvent.click(screen.getByLabelText('Close workspace'))
+    // AlertDialog の確認アクション
+    fireEvent.click(screen.getByRole('button', { name: 'ワークスペースを閉じる' }))
     expect(onCloseWorkspace).toHaveBeenCalledWith('workspace:A')
-    spy.mockRestore()
   })
 
-  it('× → confirm キャンセルで onCloseWorkspace を呼ばない', () => {
+  it('× → 確認ダイアログでキャンセルすると onCloseWorkspace を呼ばない', () => {
     const onCloseWorkspace = renderDrawer()
-    const spy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     fireEvent.click(screen.getByLabelText('Close workspace'))
+    fireEvent.click(screen.getByRole('button', { name: 'キャンセル' }))
     expect(onCloseWorkspace).not.toHaveBeenCalled()
-    spy.mockRestore()
   })
 })
 

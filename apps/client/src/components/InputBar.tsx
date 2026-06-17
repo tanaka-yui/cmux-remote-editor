@@ -1,4 +1,5 @@
-import { type CSSProperties, useState } from 'react'
+import { Keyboard } from 'lucide-react'
+import { type CSSProperties, type ReactNode, useState } from 'react'
 import { type CharMods, encodeChar, type SpecialKey } from '../lib/terminal-keys'
 
 interface InputBarProps {
@@ -50,10 +51,10 @@ const KB_LAYOUT: KbKey[][] = [
 const NO_MODS: CharMods = { ctrl: false, shift: false, option: false }
 
 const keyButtonStyle = {
-  background: '#1a1a2e',
-  border: '1px solid #2a2a4e',
+  background: 'var(--color-control-bg)',
+  border: '1px solid var(--color-border)',
   borderRadius: 4,
-  color: '#ccc',
+  color: 'var(--color-text-muted)',
   fontSize: 13,
   padding: '4px 10px',
   cursor: 'pointer',
@@ -69,7 +70,7 @@ function KeyButton({
   ariaLabel,
   flex,
 }: {
-  label: string
+  label: ReactNode
   onPress: () => void
   disabled?: boolean
   ariaLabel?: string
@@ -90,9 +91,9 @@ function KeyButton({
       style={{
         ...keyButtonStyle,
         ...(flex ? { flex, minWidth: 0, padding: '8px 0' } : null),
-        background: pressed ? '#4a5a9a' : keyButtonStyle.background,
-        borderColor: pressed ? '#6a7ace' : '#2a2a4e',
-        color: pressed ? '#fff' : keyButtonStyle.color,
+        background: pressed ? 'var(--color-key-armed-bg)' : keyButtonStyle.background,
+        borderColor: pressed ? 'var(--color-key-armed-border)' : 'var(--color-border)',
+        color: pressed ? 'var(--color-key-armed-text)' : keyButtonStyle.color,
       }}
     >
       {label}
@@ -109,7 +110,7 @@ function ToggleButton({
   ariaLabel,
   flex,
 }: {
-  label: string
+  label: ReactNode
   active: boolean
   onToggle: () => void
   disabled?: boolean
@@ -126,9 +127,9 @@ function ToggleButton({
       style={{
         ...keyButtonStyle,
         ...(flex ? { flex, minWidth: 0, padding: '8px 0' } : null),
-        background: active ? '#4a5a9a' : keyButtonStyle.background,
-        borderColor: active ? '#6a7ace' : '#2a2a4e',
-        color: active ? '#fff' : keyButtonStyle.color,
+        background: active ? 'var(--color-key-armed-bg)' : keyButtonStyle.background,
+        borderColor: active ? 'var(--color-key-armed-border)' : 'var(--color-border)',
+        color: active ? 'var(--color-key-armed-text)' : keyButtonStyle.color,
       }}
     >
       {label}
@@ -187,8 +188,8 @@ export function InputBar({ disabled, onSendText, onSendKey, onAdjustFontSize }: 
         // 最下部要素なのでホームインジケータ(iPhone)に被らない程度の余白を確保しつつ詰める。
         // フル inset(≈34px)はボタン下が空きすぎるため、inset から 24px 差し引いた値（最低 6px）にする。
         paddingBottom: 'max(6px, calc(env(safe-area-inset-bottom) - 24px))',
-        backgroundColor: '#16213e',
-        borderTop: '1px solid #2a2a4e',
+        backgroundColor: 'var(--color-surface)',
+        borderTop: '1px solid var(--color-border)',
         flexShrink: 0,
       }}
     >
@@ -211,10 +212,10 @@ export function InputBar({ disabled, onSendText, onSendKey, onAdjustFontSize }: 
           style={{
             flex: 1,
             minWidth: 0,
-            background: '#1a1a2e',
-            border: '1px solid #2a2a4e',
+            background: 'var(--color-control-bg)',
+            border: '1px solid var(--color-border)',
             borderRadius: 4,
-            color: '#e0e0e0',
+            color: 'var(--color-text)',
             fontSize: 14,
             padding: '8px 10px',
             outline: 'none',
@@ -225,10 +226,10 @@ export function InputBar({ disabled, onSendText, onSendKey, onAdjustFontSize }: 
           onClick={submit}
           disabled={disabled}
           style={{
-            background: disabled ? '#2a2a4e' : '#4caf50',
+            background: disabled ? 'var(--color-border)' : 'var(--color-accent)',
             border: 'none',
             borderRadius: 4,
-            color: '#fff',
+            color: 'var(--color-accent-contrast)',
             fontSize: 14,
             fontWeight: 600,
             padding: '8px 16px',
@@ -242,7 +243,12 @@ export function InputBar({ disabled, onSendText, onSendKey, onAdjustFontSize }: 
       {/* 常時表示のコンパクト行。⌨ とフォントのみ。特殊キー/矢印はフルキーボード側へ寄せて短く保つ。 */}
       <div style={{ display: 'flex', gap: 6, overflowX: 'auto' }}>
         {/* 英数字 QWERTY パネルの表示/非表示トグル。 */}
-        <ToggleButton label="⌨" ariaLabel="キーボード表示切替" active={keyboardOpen} onToggle={toggleKeyboard} />
+        <ToggleButton
+          label={<Keyboard size={16} />}
+          ariaLabel="キーボード表示切替"
+          active={keyboardOpen}
+          onToggle={toggleKeyboard}
+        />
         {/* フォント増減（ピンチの代替）。表示倍率なので surface 未選択でも有効。 */}
         <KeyButton label="A-" ariaLabel="フォント縮小" onPress={() => onAdjustFontSize(-1)} />
         <KeyButton label="A+" ariaLabel="フォント拡大" onPress={() => onAdjustFontSize(1)} />

@@ -10,6 +10,7 @@ import { TabBar } from './components/TabBar'
 import { Terminal } from './components/Terminal'
 import { TokenGate } from './components/TokenGate'
 import { useCmux } from './hooks/useCmux'
+import { useTheme } from './hooks/useTheme'
 import { deriveMouseMode } from './lib/mouse-mode'
 import { isPushSubscribed, isPushSupported, subscribeToPush, unsubscribeFromPush } from './lib/push'
 import type { RenderGrid } from './lib/render-grid'
@@ -27,6 +28,8 @@ const MAX_FONT_SIZE = 28
 const DEFAULT_FONT_SIZE = 13
 
 export function App() {
+  // テーマはトークンゲート画面でも効かせるため、token 判定より前で適用する。
+  const theme = useTheme()
   // iOS home-screen PWAs launch at the manifest start_url and use a storage
   // container separate from Safari, so the ?token= bootstrap never reaches
   // them — collect the token in-app when none is available.
@@ -43,10 +46,10 @@ export function App() {
     )
   }
 
-  return <Main />
+  return <Main theme={theme} />
 }
 
-function Main() {
+function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
   const {
     status,
     workspaces,
@@ -359,8 +362,8 @@ function Main() {
       style={{
         display: 'flex',
         height: 'var(--app-height)',
-        backgroundColor: '#1a1a2e',
-        color: '#e0e0e0',
+        backgroundColor: 'var(--color-bg)',
+        color: 'var(--color-text)',
         overflow: 'hidden',
       }}
     >
@@ -458,6 +461,8 @@ function Main() {
 
       <SettingsModal
         open={settingsOpen}
+        themeSetting={theme.setting}
+        onThemeChange={theme.setTheme}
         historyLines={historyLines}
         pushSupported={pushSupported}
         pushEnabled={pushEnabled}

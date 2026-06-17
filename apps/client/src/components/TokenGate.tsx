@@ -23,12 +23,12 @@ export function TokenGate({ onSubmit }: TokenGateProps) {
         maxWidth: 420,
         margin: '0 auto',
         padding: 24,
-        backgroundColor: '#1a1a2e',
-        color: '#e0e0e0',
+        backgroundColor: 'var(--color-bg)',
+        color: 'var(--color-text)',
       }}
     >
       <h1 style={{ fontSize: 18, fontWeight: 600 }}>cmux Remote</h1>
-      <p style={{ fontSize: 13, color: '#888', lineHeight: 1.6 }}>
+      <p style={{ fontSize: 13, color: 'var(--color-text-subtle)', lineHeight: 1.6 }}>
         接続には認証トークンが必要です。サーバー側の <code>pnpm start</code> の完了メッセージ（または{' '}
         <code>pnpm server:logs</code>）に表示されるトークンを貼り付けてください。
       </p>
@@ -45,9 +45,9 @@ export function TokenGate({ onSubmit }: TokenGateProps) {
         style={{
           padding: '10px 12px',
           fontSize: 16,
-          color: '#e0e0e0',
-          backgroundColor: '#16213e',
-          border: '1px solid #2a2a4e',
+          color: 'var(--color-text)',
+          backgroundColor: 'var(--color-surface)',
+          border: '1px solid var(--color-border)',
           borderRadius: 8,
           outline: 'none',
         }}
@@ -59,8 +59,8 @@ export function TokenGate({ onSubmit }: TokenGateProps) {
           padding: '10px 12px',
           fontSize: 15,
           fontWeight: 600,
-          color: '#e0e0e0',
-          backgroundColor: '#2e5cb8',
+          color: 'var(--color-accent-contrast)',
+          backgroundColor: 'var(--color-accent-strong)',
           border: 'none',
           borderRadius: 8,
           cursor: token ? 'pointer' : 'default',

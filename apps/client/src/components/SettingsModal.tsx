@@ -1,8 +1,16 @@
-import { useEffect, useState } from 'react'
+import * as Dialog from '@radix-ui/react-dialog'
+import * as Slider from '@radix-ui/react-slider'
+import * as Switch from '@radix-ui/react-switch'
+import * as ToggleGroup from '@radix-ui/react-toggle-group'
+import { Monitor, Moon, Sun, X } from 'lucide-react'
+import { type CSSProperties, useEffect, useState } from 'react'
 import { clampHistoryLines, HISTORY_LINES_MAX, HISTORY_LINES_MIN } from '../lib/settings'
+import type { ThemeSetting } from '../lib/theme'
 
 interface SettingsModalProps {
   open: boolean
+  themeSetting: ThemeSetting
+  onThemeChange: (t: ThemeSetting) => void
   historyLines: number
   pushSupported: boolean
   pushEnabled: boolean
@@ -11,10 +19,19 @@ interface SettingsModalProps {
   onClose: () => void
 }
 
-// 設定モーダル。今は履歴(スクロールバック)行数のみ。開くたびに現在値で編集状態を初期化し、
-// キャンセル/オーバーレイクリックで破棄、保存でクランプして反映する。
+const THEME_OPTIONS: { value: ThemeSetting; label: string; Icon: typeof Monitor }[] = [
+  { value: 'system', label: 'System', Icon: Monitor },
+  { value: 'light', label: 'Light', Icon: Sun },
+  { value: 'dark', label: 'Dark', Icon: Moon },
+]
+
+const labelStyle: CSSProperties = { display: 'block', fontSize: 13, color: 'var(--color-text-muted)', marginBottom: 6 }
+
+// 設定モーダル。テーマ/通知は即時反映、履歴行数は draft→保存で確定（従来挙動）。
 export function SettingsModal({
   open,
+  themeSetting,
+  onThemeChange,
   historyLines,
   pushSupported,
   pushEnabled,
@@ -22,13 +39,10 @@ export function SettingsModal({
   onSave,
   onClose,
 }: SettingsModalProps) {
-  // 入力中の文字列(空や途中入力を許容するため number ではなく string で保持)。
   const [draft, setDraft] = useState(String(historyLines))
   useEffect(() => {
     if (open) setDraft(String(historyLines))
   }, [open, historyLines])
-
-  if (!open) return null
 
   const parsed = Number.parseInt(draft, 10)
   const valid = Number.isFinite(parsed) && parsed >= HISTORY_LINES_MIN && parsed <= HISTORY_LINES_MAX
@@ -38,142 +52,225 @@ export function SettingsModal({
   }
 
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: overlay click-to-close is a common dismissable pattern
-    // biome-ignore lint/a11y/useKeyWithClickEvents: dismiss-on-backdrop; the dialog's buttons handle keyboard
-    <div
-      onClick={(e) => {
-        // 背景(オーバーレイ自身)クリックでのみ閉じる。カード内クリックは currentTarget と一致しない。
-        if (e.target === e.currentTarget) onClose()
-      }}
-      style={{
-        position: 'fixed',
-        inset: 0,
-        background: 'rgba(0, 0, 0, 0.6)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 100,
-        padding: 16,
+    <Dialog.Root
+      open={open}
+      onOpenChange={(o) => {
+        if (!o) onClose()
       }}
     >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="設定"
-        style={{
-          width: '100%',
-          maxWidth: 360,
-          background: '#16213e',
-          border: '1px solid #2a2a4e',
-          borderRadius: 10,
-          color: '#e0e0e0',
-          padding: 20,
-          boxShadow: '0 10px 40px rgba(0, 0, 0, 0.5)',
-        }}
-      >
-        <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 16 }}>設定</div>
+      <Dialog.Portal>
+        <Dialog.Overlay style={{ position: 'fixed', inset: 0, background: 'var(--color-scrim)', zIndex: 100 }} />
+        <Dialog.Content
+          aria-describedby={undefined}
+          style={{
+            position: 'fixed',
+            top: '50%',
+            left: '50%',
+            transform: 'translate(-50%, -50%)',
+            width: 'calc(100% - 32px)',
+            maxWidth: 360,
+            background: 'var(--color-surface)',
+            border: '1px solid var(--color-border)',
+            borderRadius: 10,
+            color: 'var(--color-text)',
+            padding: 20,
+            boxShadow: '0 10px 40px rgba(0, 0, 0, 0.5)',
+            zIndex: 101,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+            <Dialog.Title style={{ fontSize: 16, fontWeight: 600 }}>設定</Dialog.Title>
+            <Dialog.Close
+              aria-label="閉じる"
+              style={{
+                background: 'none',
+                border: 'none',
+                color: 'var(--color-text-muted)',
+                cursor: 'pointer',
+                display: 'flex',
+                padding: 4,
+              }}
+            >
+              <X size={18} />
+            </Dialog.Close>
+          </div>
 
-        <div style={{ marginBottom: 18 }}>
-          <label
-            htmlFor="push-enabled"
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              fontSize: 13,
-              color: '#aaa',
-            }}
-          >
-            <span>通知（Web Push）</span>
-            <input
-              id="push-enabled"
-              type="checkbox"
-              checked={pushEnabled}
-              disabled={!pushSupported}
-              onChange={(e) => onTogglePush(e.target.checked)}
-              style={{ width: 18, height: 18, accentColor: '#4caf50' }}
-            />
-          </label>
-          {!pushSupported && (
-            <div style={{ fontSize: 12, color: '#777', marginTop: 6 }}>
-              この環境では利用できません（HTTPS のホーム画面追加 PWA・iOS 16.4+ が必要です）。
+          {/* テーマ（即時反映） */}
+          <div style={{ marginBottom: 18 }}>
+            <span style={labelStyle}>テーマ</span>
+            <ToggleGroup.Root
+              type="single"
+              value={themeSetting}
+              onValueChange={(v) => {
+                if (v && THEME_OPTIONS.some((o) => o.value === v)) onThemeChange(v as ThemeSetting)
+              }}
+              style={{ display: 'flex', gap: 6 }}
+            >
+              {THEME_OPTIONS.map(({ value, label, Icon }) => {
+                const active = themeSetting === value
+                return (
+                  <ToggleGroup.Item
+                    key={value}
+                    value={value}
+                    aria-label={label}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 6,
+                      flex: 1,
+                      padding: '8px 0',
+                      fontSize: 13,
+                      borderRadius: 6,
+                      border: `1px solid ${active ? 'var(--color-accent)' : 'var(--color-border)'}`,
+                      background: active ? 'var(--color-accent)' : 'transparent',
+                      color: active ? 'var(--color-accent-contrast)' : 'var(--color-text-muted)',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <Icon size={16} />
+                    {label}
+                  </ToggleGroup.Item>
+                )
+              })}
+            </ToggleGroup.Root>
+          </div>
+
+          {/* 通知（Web Push） */}
+          <div style={{ marginBottom: 18 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span style={{ fontSize: 13, color: 'var(--color-text-muted)' }}>通知（Web Push）</span>
+              <Switch.Root
+                checked={pushEnabled}
+                disabled={!pushSupported}
+                onCheckedChange={onTogglePush}
+                style={{
+                  width: 42,
+                  height: 24,
+                  borderRadius: 12,
+                  border: 'none',
+                  position: 'relative',
+                  background: pushEnabled ? 'var(--color-accent)' : 'var(--color-border)',
+                  cursor: pushSupported ? 'pointer' : 'default',
+                  opacity: pushSupported ? 1 : 0.5,
+                  flexShrink: 0,
+                }}
+              >
+                <Switch.Thumb
+                  style={{
+                    display: 'block',
+                    width: 18,
+                    height: 18,
+                    borderRadius: '50%',
+                    background: '#fff',
+                    transition: 'transform 0.15s',
+                    transform: pushEnabled ? 'translateX(21px)' : 'translateX(3px)',
+                  }}
+                />
+              </Switch.Root>
             </div>
-          )}
-        </div>
+            {!pushSupported && (
+              <div style={{ fontSize: 12, color: 'var(--color-text-subtle)', marginTop: 6 }}>
+                この環境では利用できません（HTTPS のホーム画面追加 PWA・iOS 16.4+ が必要です）。
+              </div>
+            )}
+          </div>
 
-        <label htmlFor="history-lines" style={{ display: 'block', fontSize: 13, color: '#aaa', marginBottom: 6 }}>
-          履歴バッファ（行数）
-        </label>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <input
-            id="history-lines"
-            type="range"
-            min={HISTORY_LINES_MIN}
-            max={HISTORY_LINES_MAX}
-            step={1000}
-            value={valid ? parsed : HISTORY_LINES_MIN}
-            onChange={(e) => setDraft(e.target.value)}
-            style={{ flex: 1, minWidth: 0, accentColor: '#4caf50' }}
-          />
-          <input
-            type="number"
-            min={HISTORY_LINES_MIN}
-            max={HISTORY_LINES_MAX}
-            step={1000}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            style={{
-              width: 90,
-              background: '#1a1a2e',
-              border: `1px solid ${valid ? '#2a2a4e' : '#f44336'}`,
-              borderRadius: 4,
-              color: '#e0e0e0',
-              fontSize: 14,
-              padding: '6px 8px',
-              outline: 'none',
-            }}
-          />
-        </div>
-        <div style={{ fontSize: 12, color: '#777', marginTop: 6 }}>
-          {HISTORY_LINES_MIN.toLocaleString()}〜{HISTORY_LINES_MAX.toLocaleString()} 行（履歴モードで取得する
-          スクロールバック行数。大きいほど重くなります）
-        </div>
+          {/* 履歴バッファ（行数）。draft→保存で確定。 */}
+          <span style={labelStyle}>履歴バッファ（行数）</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <Slider.Root
+              min={HISTORY_LINES_MIN}
+              max={HISTORY_LINES_MAX}
+              step={1000}
+              value={[valid ? parsed : HISTORY_LINES_MIN]}
+              onValueChange={([v]) => setDraft(String(v))}
+              style={{ position: 'relative', display: 'flex', alignItems: 'center', flex: 1, minWidth: 0, height: 20 }}
+            >
+              <Slider.Track
+                style={{
+                  position: 'relative',
+                  flexGrow: 1,
+                  height: 4,
+                  borderRadius: 2,
+                  background: 'var(--color-border)',
+                }}
+              >
+                <Slider.Range
+                  style={{ position: 'absolute', height: '100%', borderRadius: 2, background: 'var(--color-accent)' }}
+                />
+              </Slider.Track>
+              <Slider.Thumb
+                aria-label="履歴バッファ"
+                style={{
+                  display: 'block',
+                  width: 16,
+                  height: 16,
+                  borderRadius: '50%',
+                  background: 'var(--color-accent)',
+                }}
+              />
+            </Slider.Root>
+            <input
+              type="number"
+              min={HISTORY_LINES_MIN}
+              max={HISTORY_LINES_MAX}
+              step={1000}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              style={{
+                width: 90,
+                background: 'var(--color-control-bg)',
+                border: `1px solid ${valid ? 'var(--color-border)' : 'var(--color-danger)'}`,
+                borderRadius: 4,
+                color: 'var(--color-text)',
+                fontSize: 14,
+                padding: '6px 8px',
+                outline: 'none',
+              }}
+            />
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--color-text-subtle)', marginTop: 6 }}>
+            {HISTORY_LINES_MIN.toLocaleString()}〜{HISTORY_LINES_MAX.toLocaleString()} 行（履歴モードで取得する
+            スクロールバック行数。大きいほど重くなります）
+          </div>
 
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20 }}>
-          <button
-            type="button"
-            onClick={onClose}
-            style={{
-              background: 'none',
-              border: '1px solid #2a2a4e',
-              borderRadius: 6,
-              color: '#ccc',
-              fontSize: 14,
-              padding: '8px 14px',
-              cursor: 'pointer',
-            }}
-          >
-            キャンセル
-          </button>
-          <button
-            type="button"
-            onClick={save}
-            disabled={!valid}
-            style={{
-              background: valid ? '#4caf50' : '#2a2a4e',
-              border: 'none',
-              borderRadius: 6,
-              color: '#fff',
-              fontSize: 14,
-              fontWeight: 600,
-              padding: '8px 16px',
-              cursor: valid ? 'pointer' : 'default',
-            }}
-          >
-            保存
-          </button>
-        </div>
-      </div>
-    </div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20 }}>
+            <button
+              type="button"
+              onClick={onClose}
+              style={{
+                background: 'none',
+                border: '1px solid var(--color-border)',
+                borderRadius: 6,
+                color: 'var(--color-text-muted)',
+                fontSize: 14,
+                padding: '8px 14px',
+                cursor: 'pointer',
+              }}
+            >
+              キャンセル
+            </button>
+            <button
+              type="button"
+              onClick={save}
+              disabled={!valid}
+              style={{
+                background: valid ? 'var(--color-accent)' : 'var(--color-border)',
+                border: 'none',
+                borderRadius: 6,
+                color: 'var(--color-accent-contrast)',
+                fontSize: 14,
+                fontWeight: 600,
+                padding: '8px 16px',
+                cursor: valid ? 'pointer' : 'default',
+              }}
+            >
+              保存
+            </button>
+          </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   )
 }

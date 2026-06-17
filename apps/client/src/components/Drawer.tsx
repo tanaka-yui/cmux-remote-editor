@@ -1,3 +1,6 @@
+import * as AlertDialog from '@radix-ui/react-alert-dialog'
+import * as Dialog from '@radix-ui/react-dialog'
+import { Plus, X } from 'lucide-react'
 import { useState } from 'react'
 
 import type { CmuxNotification, Workspace } from '../lib/cmux-rpc'
@@ -50,7 +53,6 @@ function folderName(path?: string): string | null {
 function latestNotificationByWorkspace(notifications: CmuxNotification[]): Map<string, CmuxNotification> {
   const latest = new Map<string, CmuxNotification>()
   for (const n of notifications) {
-    // Keep the last one per workspace (API returns in order)
     latest.set(n.workspace_id, n)
   }
   return latest
@@ -73,18 +75,16 @@ function deriveStatus(n?: CmuxNotification): { label: string; color: string } | 
   const body = n.body.toLowerCase()
   const subtitle = n.subtitle.toLowerCase()
 
-  // actionable（Needs input / Permission）は未読のみ。cmux で応答すると is_read が立つため、
-  // 既読はバッジを出さない（サーバーの isActionable と一致させ、応答済みの残留を防ぐ）。
   if (!n.is_read) {
     if (body.includes('waiting for your input') || subtitle === 'waiting') {
-      return { label: 'Needs input', color: '#F39C12' }
+      return { label: 'Needs input', color: 'var(--color-warning)' }
     }
     if (body.includes('permission')) {
-      return { label: 'Permission', color: '#E74C3C' }
+      return { label: 'Permission', color: 'var(--color-danger)' }
     }
   }
   if (subtitle.includes('completed') || body.includes('完了')) {
-    return { label: 'Idle', color: '#7f8c8d' }
+    return { label: 'Idle', color: 'var(--color-text-subtle)' }
   }
   return null
 }
@@ -96,7 +96,7 @@ function WorkspaceItem({
   unreadCount,
   notification,
   onClick,
-  onCloseWorkspace,
+  onRequestClose,
 }: {
   ws: Workspace
   index: number
@@ -104,13 +104,12 @@ function WorkspaceItem({
   unreadCount: number
   notification?: CmuxNotification
   onClick: () => void
-  onCloseWorkspace: (ref: string) => void
+  onRequestClose: () => void
 }) {
   const color = ws.custom_color ?? paletteColor(index)
   const folder = folderName(ws.current_directory)
   const status = deriveStatus(notification)
 
-  // Truncate notification body for preview
   const notifPreview = notification?.body
     ? notification.body.slice(0, 60) + (notification.body.length > 60 ? '...' : '')
     : null
@@ -120,8 +119,8 @@ function WorkspaceItem({
       style={{
         display: 'flex',
         alignItems: 'stretch',
-        background: isCurrent ? 'rgba(255, 255, 255, 0.08)' : 'none',
-        borderLeft: `3px solid ${isCurrent ? color || '#64ffda' : 'transparent'}`,
+        background: isCurrent ? 'var(--color-selected)' : 'none',
+        borderLeft: `3px solid ${isCurrent ? color || 'var(--color-accent)' : 'transparent'}`,
       }}
     >
       <button
@@ -135,48 +134,35 @@ function WorkspaceItem({
           padding: '8px 10px',
           background: 'none',
           border: 'none',
-          color: '#e0e0e0',
+          color: 'var(--color-text)',
           fontSize: 12,
           textAlign: 'left',
           cursor: 'pointer',
           alignItems: 'flex-start',
         }}
       >
-        {/* Color dot */}
         <span
-          style={{
-            width: 8,
-            height: 8,
-            borderRadius: '50%',
-            backgroundColor: color,
-            flexShrink: 0,
-            marginTop: 4,
-          }}
+          style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: color, flexShrink: 0, marginTop: 4 }}
         />
-
-        {/* Content */}
         <span style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
-          {/* Title */}
           <span
             style={{
               display: 'block',
               overflow: 'hidden',
               textOverflow: 'ellipsis',
               whiteSpace: 'nowrap',
-              color: isCurrent ? '#fff' : '#ccc',
+              color: isCurrent ? 'var(--color-text)' : 'var(--color-text-muted)',
               fontWeight: isCurrent ? 600 : 400,
             }}
           >
             {ws.title || ws.ref}
           </span>
-
-          {/* Notification preview */}
           {notifPreview && (
             <span
               style={{
                 display: 'block',
                 fontSize: 10,
-                color: '#999',
+                color: 'var(--color-text-subtle)',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap',
@@ -186,8 +172,6 @@ function WorkspaceItem({
               {notifPreview}
             </span>
           )}
-
-          {/* Status badge */}
           {status && (
             <span
               style={{
@@ -199,25 +183,16 @@ function WorkspaceItem({
                 marginTop: 2,
               }}
             >
-              <span
-                style={{
-                  width: 6,
-                  height: 6,
-                  borderRadius: '50%',
-                  backgroundColor: status.color,
-                }}
-              />
+              <span style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: status.color }} />
               {status.label}
             </span>
           )}
-
-          {/* Folder path */}
           {folder && (
             <span
               style={{
                 display: 'block',
                 fontSize: 10,
-                color: '#555',
+                color: 'var(--color-text-subtle)',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap',
@@ -228,8 +203,6 @@ function WorkspaceItem({
             </span>
           )}
         </span>
-
-        {/* Unread badge */}
         {unreadCount > 0 && (
           <span
             style={{
@@ -237,8 +210,10 @@ function WorkspaceItem({
               height: 16,
               borderRadius: 8,
               backgroundColor:
-                status?.label === 'Needs input' || status?.label === 'Permission' ? status.color : '#e74c3c',
-              color: '#fff',
+                status?.label === 'Needs input' || status?.label === 'Permission'
+                  ? status.color
+                  : 'var(--color-danger)',
+              color: 'var(--color-accent-contrast)',
               fontSize: 10,
               fontWeight: 700,
               display: 'flex',
@@ -254,12 +229,10 @@ function WorkspaceItem({
         )}
       </button>
 
-      {/* Close affordance: タップで確認ダイアログ → OK のみ close（破壊的操作のため確認を挟む）。 */}
+      {/* 閉じる: AlertDialog で確認（破壊的操作）。 */}
       <button
         type="button"
-        onClick={() => {
-          if (window.confirm(`ワークスペース「${ws.title || ws.ref}」を閉じますか？`)) onCloseWorkspace(ws.ref)
-        }}
+        onClick={onRequestClose}
         aria-label="Close workspace"
         style={{
           display: 'flex',
@@ -268,14 +241,12 @@ function WorkspaceItem({
           width: 44,
           background: 'none',
           border: 'none',
-          color: '#888',
-          fontSize: 22,
-          lineHeight: 1,
+          color: 'var(--color-text-subtle)',
           cursor: 'pointer',
           flexShrink: 0,
         }}
       >
-        &times;
+        <X size={18} />
       </button>
     </div>
   )
@@ -292,37 +263,94 @@ function WorkspaceList({
 }: Omit<DrawerProps, 'open' | 'onNewWorkspace'> & { isDesktop: boolean }) {
   const unreadCounts = unreadCountByWorkspace(notifications)
   const latestNotifs = latestNotificationByWorkspace(notifications)
+  // 閉じる確認の対象ワークスペース（null=ダイアログ非表示）。
+  const [closing, setClosing] = useState<Workspace | null>(null)
 
   return (
-    <ul
-      style={{
-        listStyle: 'none',
-        margin: 0,
-        padding: '4px 0',
-        flex: 1,
-        overflowY: 'auto',
-      }}
-    >
-      {workspaces.map((ws, i) => (
-        <li key={ws.ref} style={{ borderBottom: '1px solid #1a2340' }}>
-          <WorkspaceItem
-            ws={ws}
-            index={i}
-            isCurrent={ws.ref === currentWorkspace}
-            unreadCount={unreadCounts.get(ws.id) ?? 0}
-            notification={latestNotifs.get(ws.id)}
-            onClick={() => {
-              onSelect(ws.ref)
-              // ピン留めサイドバー（デスクトップ/タブレット=iPad 等）はワークスペース切替で閉じない。
-              // モバイルはオーバーレイのため本文を覆い続けないよう選択で閉じる。
-              if (!isDesktop) onClose()
+    <>
+      <ul style={{ listStyle: 'none', margin: 0, padding: '4px 0', flex: 1, overflowY: 'auto' }}>
+        {workspaces.map((ws, i) => (
+          <li key={ws.ref} style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
+            <WorkspaceItem
+              ws={ws}
+              index={i}
+              isCurrent={ws.ref === currentWorkspace}
+              unreadCount={unreadCounts.get(ws.id) ?? 0}
+              notification={latestNotifs.get(ws.id)}
+              onClick={() => {
+                onSelect(ws.ref)
+                if (!isDesktop) onClose()
+              }}
+              onRequestClose={() => setClosing(ws)}
+            />
+          </li>
+        ))}
+        {workspaces.length === 0 && (
+          <li style={{ padding: '12px 16px', color: 'var(--color-text-subtle)', fontSize: 12 }}>No workspaces</li>
+        )}
+      </ul>
+
+      <AlertDialog.Root open={closing !== null} onOpenChange={(o) => !o && setClosing(null)}>
+        <AlertDialog.Portal>
+          <AlertDialog.Overlay style={{ position: 'fixed', inset: 0, background: 'var(--color-scrim)', zIndex: 110 }} />
+          <AlertDialog.Content
+            style={{
+              position: 'fixed',
+              top: '50%',
+              left: '50%',
+              transform: 'translate(-50%, -50%)',
+              width: 'calc(100% - 32px)',
+              maxWidth: 320,
+              background: 'var(--color-surface)',
+              border: '1px solid var(--color-border)',
+              borderRadius: 10,
+              color: 'var(--color-text)',
+              padding: 20,
+              zIndex: 111,
             }}
-            onCloseWorkspace={onCloseWorkspace}
-          />
-        </li>
-      ))}
-      {workspaces.length === 0 && <li style={{ padding: '12px 16px', color: '#666', fontSize: 12 }}>No workspaces</li>}
-    </ul>
+          >
+            <AlertDialog.Title style={{ fontSize: 15, fontWeight: 600, marginBottom: 8 }}>
+              ワークスペースを閉じる
+            </AlertDialog.Title>
+            <AlertDialog.Description style={{ fontSize: 13, color: 'var(--color-text-muted)', marginBottom: 18 }}>
+              「{closing?.title || closing?.ref}」を閉じますか？
+            </AlertDialog.Description>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <AlertDialog.Cancel
+                style={{
+                  background: 'none',
+                  border: '1px solid var(--color-border)',
+                  borderRadius: 6,
+                  color: 'var(--color-text-muted)',
+                  fontSize: 14,
+                  padding: '8px 14px',
+                  cursor: 'pointer',
+                }}
+              >
+                キャンセル
+              </AlertDialog.Cancel>
+              <AlertDialog.Action
+                onClick={() => {
+                  if (closing) onCloseWorkspace(closing.ref)
+                }}
+                style={{
+                  background: 'var(--color-danger)',
+                  border: 'none',
+                  borderRadius: 6,
+                  color: 'var(--color-accent-contrast)',
+                  fontSize: 14,
+                  fontWeight: 600,
+                  padding: '8px 16px',
+                  cursor: 'pointer',
+                }}
+              >
+                ワークスペースを閉じる
+              </AlertDialog.Action>
+            </div>
+          </AlertDialog.Content>
+        </AlertDialog.Portal>
+      </AlertDialog.Root>
+    </>
   )
 }
 
@@ -351,8 +379,8 @@ function NewWorkspaceButton({ onNewWorkspace }: { onNewWorkspace: () => Promise<
         paddingBottom: 'calc(10px + env(safe-area-inset-bottom))',
         background: 'none',
         border: 'none',
-        borderTop: '1px solid #1e2a42',
-        color: creating ? '#888' : '#e0e0e0',
+        borderTop: '1px solid var(--color-border-subtle)',
+        color: creating ? 'var(--color-text-subtle)' : 'var(--color-text)',
         fontSize: 12,
         fontWeight: 600,
         textAlign: 'left',
@@ -360,7 +388,7 @@ function NewWorkspaceButton({ onNewWorkspace }: { onNewWorkspace: () => Promise<
         flexShrink: 0,
       }}
     >
-      <span style={{ fontSize: 15, lineHeight: 1 }}>+</span>
+      <Plus size={15} />
       {creating ? '作成中…' : '新規ワークスペース'}
     </button>
   )
@@ -392,8 +420,7 @@ export function Drawer({
     />
   )
 
-  // Desktop/タブレット: ピン留めサイドバー。既定で開いた状態（自動収納しない）だが、
-  // ヘッダーのメニューボタンで開閉できる。閉じたら画面外へスライドし、本文が全幅になる。
+  // Desktop/タブレット: ピン留めサイドバー（非モーダル）。開閉でスライドし本文が全幅になる。
   if (isDesktop) {
     return (
       <nav
@@ -403,8 +430,8 @@ export function Drawer({
           left: 0,
           bottom: 0,
           width: SIDEBAR_WIDTH,
-          backgroundColor: '#0f1729',
-          borderRight: '1px solid #1e2a42',
+          backgroundColor: 'var(--color-sidebar)',
+          borderRight: '1px solid var(--color-border-subtle)',
           display: 'flex',
           flexDirection: 'column',
           paddingTop: 'env(safe-area-inset-top)',
@@ -418,11 +445,11 @@ export function Drawer({
             padding: '0 12px',
             fontSize: 13,
             fontWeight: 700,
-            color: '#888',
+            color: 'var(--color-text-subtle)',
             height: 44,
             display: 'flex',
             alignItems: 'center',
-            borderBottom: '1px solid #1e2a42',
+            borderBottom: '1px solid var(--color-border-subtle)',
           }}
         >
           cmux Remote
@@ -433,44 +460,49 @@ export function Drawer({
     )
   }
 
-  // Mobile: overlay drawer
+  // Mobile: radix Dialog によるモーダルオーバーレイ（フォーカストラップ/Escape/スクロールロック）。
   return (
-    <>
-      {open && (
-        <button
-          type="button"
-          aria-label="Close drawer"
-          onClick={onClose}
+    <Dialog.Root open={open} onOpenChange={(o) => !o && onClose()}>
+      <Dialog.Portal>
+        <Dialog.Overlay
+          className="drawer-overlay"
+          style={{ position: 'fixed', inset: 0, backgroundColor: 'var(--color-scrim)', zIndex: 90 }}
+        />
+        <Dialog.Content
+          className="drawer-content"
+          aria-describedby={undefined}
           style={{
             position: 'fixed',
-            inset: 0,
-            backgroundColor: 'rgba(0, 0, 0, 0.5)',
-            zIndex: 90,
-            border: 'none',
-            padding: 0,
-            cursor: 'default',
+            top: 0,
+            left: 0,
+            bottom: 0,
+            width: 260,
+            backgroundColor: 'var(--color-sidebar)',
+            zIndex: 100,
+            display: 'flex',
+            flexDirection: 'column',
+            paddingTop: 'env(safe-area-inset-top)',
           }}
-        />
-      )}
-      <nav
-        style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          bottom: 0,
-          width: 260,
-          backgroundColor: '#0f1729',
-          transform: open ? 'translateX(0)' : 'translateX(-100%)',
-          transition: 'transform 0.2s ease-out',
-          zIndex: 100,
-          display: 'flex',
-          flexDirection: 'column',
-          paddingTop: 'env(safe-area-inset-top)',
-        }}
-      >
-        {sidebarContent}
-        <NewWorkspaceButton onNewWorkspace={onNewWorkspace} />
-      </nav>
-    </>
+        >
+          <Dialog.Title
+            style={{
+              position: 'absolute',
+              width: 1,
+              height: 1,
+              padding: 0,
+              margin: -1,
+              overflow: 'hidden',
+              clip: 'rect(0 0 0 0)',
+              whiteSpace: 'nowrap',
+              border: 0,
+            }}
+          >
+            ワークスペース
+          </Dialog.Title>
+          {sidebarContent}
+          <NewWorkspaceButton onNewWorkspace={onNewWorkspace} />
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   )
 }

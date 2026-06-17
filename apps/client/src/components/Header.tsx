@@ -1,3 +1,4 @@
+import { Menu, Settings } from 'lucide-react'
 import type { ConnectionStatus } from '../hooks/useWebSocket'
 import { ConnectionIndicator } from './ConnectionIndicator'
 
@@ -5,12 +6,9 @@ interface HeaderProps {
   workspaceName: string | null
   onMenuToggle: () => void
   showMenuButton?: boolean
-  // 接続状態＋鮮度表示(旧 footer/StatusBar からヘッダーへ移設)。
   status: ConnectionStatus
   lastUpdated?: number | null
-  // 履歴(スクロールバック)を遡っている間の鮮度表示（「履歴 · HH:MM時点」）に使う。
   historyMode?: boolean
-  // 設定モーダルを開く。
   onOpenSettings: () => void
 }
 
@@ -30,9 +28,9 @@ export function Header({
         alignItems: 'center',
         height: 44,
         padding: '0 12px',
-        backgroundColor: '#16213e',
-        color: '#e0e0e0',
-        borderBottom: '1px solid #2a2a4e',
+        backgroundColor: 'var(--color-surface)',
+        color: 'var(--color-text)',
+        borderBottom: '1px solid var(--color-border)',
         flexShrink: 0,
       }}
     >
@@ -44,14 +42,14 @@ export function Header({
           style={{
             background: 'none',
             border: 'none',
-            color: '#e0e0e0',
-            fontSize: 22,
+            color: 'var(--color-text)',
             padding: '4px 8px',
             cursor: 'pointer',
-            lineHeight: 1,
+            display: 'flex',
+            alignItems: 'center',
           }}
         >
-          &#9776;
+          <Menu size={22} />
         </button>
       )}
       <span
@@ -68,10 +66,8 @@ export function Header({
       >
         {workspaceName ?? 'cmux Remote'}
       </span>
-      {/* 右側グループ: 接続状態＋鮮度(旧 footer)と設定。 */}
       <div style={{ marginLeft: 8, display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
         <ConnectionIndicator status={status} lastUpdated={lastUpdated} historyMode={historyMode} />
-        {/* 設定（履歴バッファ等）。 */}
         <button
           type="button"
           onClick={onOpenSettings}
@@ -79,14 +75,14 @@ export function Header({
           style={{
             background: 'none',
             border: 'none',
-            color: '#aaa',
-            fontSize: 19,
+            color: 'var(--color-text-muted)',
             padding: '4px 6px',
             cursor: 'pointer',
-            lineHeight: 1,
+            display: 'flex',
+            alignItems: 'center',
           }}
         >
-          &#9881;
+          <Settings size={19} />
         </button>
       </div>
     </header>

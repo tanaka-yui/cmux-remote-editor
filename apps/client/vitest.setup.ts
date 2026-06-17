@@ -46,3 +46,39 @@ function installStorage(target: object, storage: Storage) {
 const storage = createMemoryStorage()
 installStorage(globalThis, storage)
 if (typeof window !== 'undefined') installStorage(window, storage)
+
+// jsdom には matchMedia が無い。theme（'system' 解決）と radix が参照するため最小モックを入れる。
+// 既定は light（matches:false）。テーマ系テストは window.matchMedia を各自で差し替える。
+if (typeof window !== 'undefined' && typeof window.matchMedia !== 'function') {
+  Object.defineProperty(window, 'matchMedia', {
+    configurable: true,
+    writable: true,
+    value: (query: string): MediaQueryList => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    }),
+  })
+}
+
+// radix Slider/一部プリミティブが要求する ResizeObserver を補う。
+if (typeof globalThis.ResizeObserver === 'undefined') {
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+}
+
+// radix Slider/Dialog が使う pointer capture と scrollIntoView を no-op で補う。
+if (typeof Element !== 'undefined') {
+  if (!Element.prototype.hasPointerCapture) Element.prototype.hasPointerCapture = () => false
+  if (!Element.prototype.setPointerCapture) Element.prototype.setPointerCapture = () => {}
+  if (!Element.prototype.releasePointerCapture) Element.prototype.releasePointerCapture = () => {}
+  if (!Element.prototype.scrollIntoView) Element.prototype.scrollIntoView = () => {}
+}

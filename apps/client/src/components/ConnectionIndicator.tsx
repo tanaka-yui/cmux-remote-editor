@@ -19,9 +19,9 @@ function formatClock(epochMs: number): string {
 }
 
 const STATUS_CONFIG: Record<ConnectionStatus, { label: string; color: string }> = {
-  connected: { label: 'Connected', color: '#4caf50' },
-  connecting: { label: 'Connecting...', color: '#ff9800' },
-  disconnected: { label: 'Disconnected', color: '#f44336' },
+  connected: { label: 'Connected', color: 'var(--color-accent)' },
+  connecting: { label: 'Connecting...', color: 'var(--color-warning)' },
+  disconnected: { label: 'Disconnected', color: 'var(--color-danger)' },
 }
 
 // 接続状態（ドット＋ラベル）とオフライン/履歴の鮮度表示。Header の右側に置く。
@@ -50,8 +50,17 @@ export function ConnectionIndicator({ status, lastUpdated, historyMode }: Connec
   }
 
   return (
-    <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#aaa', whiteSpace: 'nowrap' }}>
-      {notice && <span style={{ color: historyMode ? '#4caf50' : '#ff9800' }}>{notice}</span>}
+    <span
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+        fontSize: 12,
+        color: 'var(--color-text-muted)',
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {notice && <span style={{ color: historyMode ? 'var(--color-accent)' : 'var(--color-warning)' }}>{notice}</span>}
       <span
         style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: config.color, display: 'inline-block' }}
       />

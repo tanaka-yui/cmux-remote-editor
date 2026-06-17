@@ -378,6 +378,7 @@ export function Terminal({
     overflow: 'auto',
     // 一本指でブラウザのネイティブ縦横スクロール（慣性付き）。タップ/右クリックは touchend で判定する。
     touchAction: 'pan-x pan-y',
+    backgroundColor: 'var(--color-terminal-bg)',
   }
 
   // wterm reads font/colors from CSS custom properties on the terminal element.
