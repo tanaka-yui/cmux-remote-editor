@@ -182,9 +182,14 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
       return
     }
 
+    // 在flight の readGrid(prevSurface) が currentSurface 変化後に resolve すると、
+    // 新タブの termGrid を旧タブの内容で上書きしてしまう（PWA 1秒ポール + RPC 遅延で頻発）。
+    // cleanup で cancelled を立てて resolve 後の state 反映を破棄する。
+    let cancelled = false
     const poll = async () => {
       try {
         const grid = await readGrid(currentSurface)
+        if (cancelled) return
         setTermGrid(grid)
         const now = Date.now()
         setLastUpdated(now)
@@ -193,6 +198,7 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
         saveSurfaceScreen(currentSurface, { grid: grid ?? undefined, updatedAt: now })
         staleResyncRef.current = null
       } catch (err) {
+        if (cancelled) return
         // currentSurface が「閉じられた surface」を指すと cmux は terminal.replay に
         // 「Missing or invalid terminal_id」を返し続ける（別ウィンドウ/別 PWA でタブを閉じた、
         // 通信不良中にタブ構成が変わった等）。surface 一覧を再取得すれば resolveSelectedRef が
@@ -227,6 +233,7 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
     window.addEventListener('focus', resume)
 
     return () => {
+      cancelled = true
       if (pollRef.current) clearInterval(pollRef.current)
       document.removeEventListener('visibilitychange', resume)
       window.removeEventListener('pageshow', resume)

@@ -26,8 +26,12 @@ function grid(over: Partial<RenderGrid>): RenderGrid {
 }
 
 describe('renderGridToAnsi', () => {
-  it('先頭で画面全消去 + ホームを発行する', () => {
-    expect(renderGridToAnsi(grid({}))).toBe('\x1b[2J\x1b[H\x1b[0m')
+  it('先頭で画面全消去 + スクロールバック消去 + ホームを発行する', () => {
+    // [3J を含めて wterm の wasm 内部スクロールバックを毎フレーム空にする。これが無いと
+    // ライブポール毎に旧フレームが scrollback に積まれ、(1) タブ切替で wterm インスタンスを
+    // 共有しているため別タブの過去フレームが見える、(2) scrollHeight が増え続けて
+    // 「一番下」が下に逃げ続けてスクロールが追いつかなくなる、の 2 つの不具合になる。
+    expect(renderGridToAnsi(grid({}))).toBe('\x1b[2J\x1b[3J\x1b[H\x1b[0m')
   })
 
   it('行ごとに連続描画し、先頭/span 間の隙間を既定スタイルの空白で埋める', () => {
