@@ -1,6 +1,6 @@
 import { useTerminal, Terminal as WTerminal } from '@wterm/react'
 import type { CSSProperties, TouchEvent as ReactTouchEvent, WheelEvent as ReactWheelEvent } from 'react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import '@wterm/react/css'
 import { centroid, isTap, touchDistance } from '../lib/multitouch'
 import { type RenderGrid, renderGridToAnsi } from '../lib/render-grid'
@@ -26,18 +26,19 @@ interface TerminalProps {
   onExitHistory: () => void
 }
 
-// cmux read-screen emits bare "\n" line feeds; wterm (unlike xterm's convertEol)
-// does not return the cursor to column 0, so join with "\r\n" to avoid a
-// staircase effect. Trailing whitespace is trimmed; leading indentation is kept.
+// 履歴(プレーンテキスト)の <pre> 描画用整形。末尾空白を落として横幅の無駄な肥大
+// （read_text は行を cols 幅まで空白で埋める）を防ぐ。行頭インデントは保持する。
 function cleanScreen(content: string): string {
   return content
     .split('\n')
     .map((line) => line.trimEnd())
-    .join('\r\n')
+    .join('\n')
 }
 
-const CLEAR = '\x1b[2J\x1b[3J\x1b[H'
 const PADDING = 8
+// Latin/CJK の両方をこの 2:1 等幅フォントで描き、全角を確実に 2×Latin にする(セル=cmux と一致)。
+// 未ロード時のフォールバックに Menlo 系を残す。wterm(--term-font-family)と履歴の <pre> で共用する。
+const TERM_FONT_FAMILY = "'M PLUS 1 Code', Menlo, Consolas, 'DejaVu Sans Mono', 'Courier New', monospace"
 // ピンチでフォントを 1 段変えるのに必要な指間距離の変化（px）。
 const PINCH_STEP_PX = 32
 // ライブ上端での「過去方向オーバースクロール」で遡りへ入る閾値。wheel は deltaY(px 相当)、
@@ -65,26 +66,25 @@ export function Terminal({
 }: TerminalProps) {
   const { ref, write } = useTerminal()
   const gridRef = useRef<RenderGrid | null>(null)
-  const contentRef = useRef('')
   const readyRef = useRef(false)
   const wrapperRef = useRef<HTMLDivElement | null>(null)
   // grid モードの横幅に使う実測コンテンツ幅(px)。0 のうちは下の termStyle が cols*ch フォールバック。
   const [measuredWidth, setMeasuredWidth] = useState(0)
 
+  // wterm に書くのは grid のみ。プレーンテキスト(履歴/オフライン)は wterm の WASM スクロールバックが
+  // 1000 行でハードコード頭打ち(変更 API なし)のため wterm に流さず、下の <pre> に全行を直描画する。
+  // これが無いと設定の履歴バッファ(historyLines)を 1000 超に上げても遡れる範囲が変わらない。
   const repaint = useCallback(
-    (g: RenderGrid | null, text: string) => {
-      // grid があればグリッドを忠実描画、無ければ従来のプレーンテキスト描画にフォールバック。
+    (g: RenderGrid | null) => {
       if (g) write(renderGridToAnsi(g))
-      else write(CLEAR + cleanScreen(text))
     },
     [write],
   )
 
   useEffect(() => {
     gridRef.current = grid
-    contentRef.current = content
-    if (readyRef.current) repaint(grid, content)
-  }, [grid, content, repaint])
+    if (readyRef.current) repaint(grid)
+  }, [grid, repaint])
 
   const onReady = useCallback(() => {
     readyRef.current = true
@@ -94,7 +94,7 @@ export function Terminal({
     // フォーカス自体を無効化し、合成 click が漏れても副作用を断つ。
     const textarea = wrapperRef.current?.querySelector('textarea')
     if (textarea) textarea.disabled = true
-    repaint(gridRef.current, contentRef.current)
+    repaint(gridRef.current)
   }, [repaint])
 
   // grid モードの実コンテンツ幅を計測する。wterm は通常文字をセル幅非固定の素 span で描くため
@@ -191,9 +191,21 @@ export function Terminal({
     return () => wrapper.removeEventListener('scroll', onScroll, true)
   }, [useGrid, onExitHistory])
 
-  // 履歴→ライブ復帰時に wrapper を最下部(最新)へ戻す。grid モードでは wrapper が縦スクローラだが、
-  // 履歴中は .wterm が height:100% で wrapper は非スクロール=scrollTop:0 のまま。復帰で .wterm が
-  // rows 由来の高さ(viewport より高いことが多い)になると、戻さない限り最新行が下に隠れる。grid 化の
+  // 履歴(プレーンテキスト)進入時・内容到着時に wrapper を最下部(最新)へ合わせる。従来は wterm の
+  // 書込み後末尾追従に頼っていたが、<pre> 直描画では自前で合わせる。強制スクロール自体を
+  // 「一度上へ遡った」と誤認して即ライブ復帰しないよう hasScrolledUp をリセットする。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: content は履歴到着時の再スクロールトリガーで本体では未参照。
+  useLayoutEffect(() => {
+    if (useGrid) return
+    const el = wrapperRef.current
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+    hasScrolledUpRef.current = false
+  }, [useGrid, content])
+
+  // 履歴→ライブ復帰時に wrapper を最下部(最新)へ戻す。履歴中は wrapper が長い <pre> をスクロール
+  // しており scrollTop が任意位置にある。復帰で <pre> が消え .wterm が rows 由来の高さ(viewport より
+  // 高いことが多い)になると、戻さない限り最新行が下に隠れる/半端な位置に残る。grid 化の
   // 立ち上がり(false→true)だけで実行する: 毎ポーリングで動かすと上スクロールでの履歴進入ができなくなる。
   const prevUseGridRef = useRef(useGrid)
   useEffect(() => {
@@ -399,21 +411,31 @@ export function Terminal({
     // それを超える(モバイル/内容が pane より広い)なら実測幅まで広げて横スクロール可能に。cols*ch は使わない
     // (末尾の空セルまで含み grid が pane より広いと右に余白が出るため)。未計測(0)時は 100% = pane を満たす。
     width: grid ? `max(100%, ${measuredWidth}px)` : undefined,
-    // Latin/CJK の両方をこの 2:1 等幅フォントで描き、全角を確実に 2×Latin にする(セル=cmux と一致)。
-    // 未ロード時のフォールバックに Menlo 系を残す。
-    '--term-font-family': "'M PLUS 1 Code', Menlo, Consolas, 'DejaVu Sans Mono', 'Courier New', monospace",
+    '--term-font-family': TERM_FONT_FAMILY,
     '--term-bg': '#1e1e1e',
     '--term-fg': '#e0e0e0',
     '--term-cursor': '#e0e0e0',
     '--term-font-size': `${fontSize}px`,
-    // 履歴(プレーンテキスト)モードは .wterm をビューポート高(wrapper の 100%)に固定する。これで wterm の
-    // autoResize は「画面に収まる行数」だけを可視グリッドにし、超過分を自前スクロールバックへ退避 →
-    // has-scrollback で .wterm が overflow-y:auto になり縦スクロール可能・書込み後は末尾(最新)へ追従する。
-    // 未指定だと .wterm が全行ぶんに伸びてスクロールバックが空=wrapper にクリップされ動かせなかった。
-    // grid モードは WTerminal が rows 由来の固定高(mergedStyle)を付けるため height キーを入れない
-    // (undefined で上書きすると固定高が消えるので、キー自体を入れない条件付きスプレッドにする)。
-    ...(useGrid ? {} : { height: '100%' }),
+    // 履歴(プレーンテキスト)モードは wterm を隠し、下の <pre> が全行を描画する（wterm の WASM
+    // スクロールバックは 1000 行で頭打ちのため使わない）。grid モードは WTerminal が rows 由来の
+    // 固定高(mergedStyle)を付けるため display キーを入れない条件付きスプレッドにする。
+    ...(useGrid ? {} : { display: 'none' }),
   } as CSSProperties
+
+  // 履歴(プレーンテキスト)の <pre>。wterm と同じ見た目(フォント/行高/余白/前景色)に合わせる。
+  // ターミナルのビューポートは全テーマでダーク固定のため配色は wterm の --term-* と同じ実値。
+  // 長行は折り返さず width:max-content で最長行まで箱を広げ、wrapper の横スクロールで見る。
+  const preStyle: CSSProperties = {
+    margin: 0,
+    padding: PADDING,
+    fontFamily: TERM_FONT_FAMILY,
+    fontSize: `${fontSize}px`,
+    lineHeight: 1.2,
+    color: '#e0e0e0',
+    whiteSpace: 'pre',
+    width: 'max-content',
+    minWidth: '100%',
+  }
 
   return (
     <div
@@ -435,6 +457,7 @@ export function Terminal({
         onReady={onReady}
         style={termStyle}
       />
+      {!useGrid && <pre style={preStyle}>{cleanScreen(content)}</pre>}
     </div>
   )
 }

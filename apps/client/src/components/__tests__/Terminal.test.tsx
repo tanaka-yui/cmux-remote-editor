@@ -121,6 +121,53 @@ describe('Terminal history→live scroll', () => {
   })
 })
 
+describe('Terminal history rendering', () => {
+  afterEach(cleanup)
+
+  // 履歴(grid=null)は wterm でなく <pre> に全行を直描画する。wterm の WASM コアは
+  // スクロールバックを 1000 行でハードコード頭打ちにする(変更 API なし)ため、wterm に
+  // 書き込むと historyLines を 1000 超に上げても遡れる範囲が変わらない（本バグの根本原因）。
+  it('プレーンテキストは pre に全行描画される（1000 行超も欠けない）', () => {
+    const lines = Array.from({ length: 3000 }, (_, i) => `line-${i}`)
+    const { container } = render(<Terminal grid={null} {...baseProps} content={lines.join('\n')} />)
+    const pre = container.querySelector('pre')
+    expect(pre).not.toBeNull()
+    expect(pre?.textContent).toContain('line-0')
+    expect(pre?.textContent).toContain('line-2999')
+  })
+
+  it('履歴中は wterm を display:none で隠す', () => {
+    render(<Terminal grid={null} {...baseProps} content="hello" />)
+    const style = wtermProps.current.style as CSSProperties
+    expect(style.display).toBe('none')
+  })
+
+  it('ライブ(grid)中は pre を描画せず wterm を表示する', () => {
+    const { container } = render(<Terminal grid={grid} {...baseProps} />)
+    expect(container.querySelector('pre')).toBeNull()
+    const style = wtermProps.current.style as CSSProperties
+    expect(style.display).not.toBe('none')
+  })
+
+  // 進入直後に最新(末尾)を見せる。従来は wterm の書込み後末尾追従に頼っていたが、
+  // pre 直描画では自前で wrapper を最下部へスクロールする必要がある。
+  it('履歴進入時に wrapper を最下部(scrollHeight)へスクロールする', () => {
+    const { container, rerender } = render(<Terminal grid={grid} {...baseProps} />)
+    const wrapper = container.firstChild as HTMLElement
+    let scrollTopVal = 0
+    Object.defineProperty(wrapper, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTopVal,
+      set: (v: number) => {
+        scrollTopVal = v
+      },
+    })
+    Object.defineProperty(wrapper, 'scrollHeight', { configurable: true, get: () => 5000 })
+    rerender(<Terminal grid={null} {...baseProps} content="history" />)
+    expect(wrapper.scrollTop).toBe(5000)
+  })
+})
+
 describe('Terminal tap handling', () => {
   afterEach(cleanup)
 
