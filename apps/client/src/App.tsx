@@ -221,7 +221,9 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
         // 「同ポーリングの grid」で行う(レンダー時に削り直すと凍結中の表示が動いてしまう)。
         if (pinnedRef.current && grid && grid.active_screen !== 'alternate') {
           const text = await readText(currentSurface, { scrollback: true, lines: historyLines })
-          if (cancelled) return
+          // await 中に unpin（上へ遡り開始）した場合は反映しない。反映すると凍結すべき <pre> が
+          // 書き換わり、遡り始めた瞬間に読んでいる行が一度流れる（キャッシュ保存も次回ピン時に任せる）。
+          if (cancelled || !pinnedRef.current) return
           setTermHistory(stripVisibleScreen(text, visibleLineCount(grid)))
           if (text !== lastScrollbackRef.current) {
             lastScrollbackRef.current = text
