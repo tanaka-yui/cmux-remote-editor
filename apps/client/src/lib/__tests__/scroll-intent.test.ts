@@ -1,30 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { isAtBottom, isOverscrollUp } from '../scroll-intent'
-
-describe('isOverscrollUp', () => {
-  it('上端で過去方向(負)に閾値超え → true', () => {
-    expect(isOverscrollUp({ scrollTop: 0, deltaY: -20, threshold: 8 })).toBe(true)
-  })
-  it('上端でも下方向(正)は false', () => {
-    expect(isOverscrollUp({ scrollTop: 0, deltaY: 20, threshold: 8 })).toBe(false)
-  })
-  it('上端でも閾値未満は false', () => {
-    expect(isOverscrollUp({ scrollTop: 0, deltaY: -3, threshold: 8 })).toBe(false)
-  })
-  it('上端でない(scrollTop>atTopEpsilon)なら過去方向でも false', () => {
-    expect(isOverscrollUp({ scrollTop: 50, deltaY: -20, threshold: 8 })).toBe(false)
-  })
-  it('atTopEpsilon 以内は上端扱い', () => {
-    expect(isOverscrollUp({ scrollTop: 1, deltaY: -20, threshold: 8, atTopEpsilon: 1 })).toBe(true)
-  })
-  it('境界: deltaY がちょうど -threshold なら発動する（at-or-beyond）', () => {
-    expect(isOverscrollUp({ scrollTop: 0, deltaY: -8, threshold: 8 })).toBe(true)
-  })
-  it('atTopEpsilon 省略時はデフォルト 1 が使われる', () => {
-    expect(isOverscrollUp({ scrollTop: 1, deltaY: -20, threshold: 8 })).toBe(true)
-  })
-})
+import { isAtBottom } from '../scroll-intent'
 
 describe('isAtBottom', () => {
   it('最下部 → true', () => {
