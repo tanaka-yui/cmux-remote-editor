@@ -57,6 +57,22 @@ function defineScrollMetrics(
   Object.defineProperty(el, 'clientHeight', { configurable: true, get: () => init.clientHeight ?? 100 })
 }
 
+// jsdom の getBoundingClientRect は全て 0 を返すため、.wterm の rect を明示して
+// 「タップが grid 領域の内/外」の判定を再現する。
+function stubWtermRect(container: HTMLElement, rect: { left: number; top: number; right: number; bottom: number }) {
+  const el = container.querySelector<HTMLElement>('.wterm')
+  if (!el) throw new Error('wterm not found')
+  el.getBoundingClientRect = () =>
+    ({
+      ...rect,
+      width: rect.right - rect.left,
+      height: rect.bottom - rect.top,
+      x: rect.left,
+      y: rect.top,
+      toJSON: () => ({}),
+    }) as DOMRect
+}
+
 describe('Terminal width sizing', () => {
   afterEach(cleanup)
 
@@ -171,6 +187,7 @@ describe('Terminal tap handling', () => {
   it('一本指タップは合成 click(仮想キーボード)を抑止しつつ左クリックを送る', () => {
     const onSendMouse = vi.fn()
     const { container } = render(<Terminal grid={grid} {...baseProps} mouseEnabled useSgr onSendMouse={onSendMouse} />)
+    stubWtermRect(container, { left: 0, top: 0, right: 200, bottom: 200 })
     const wrapper = container.firstChild as HTMLElement
     fireEvent.touchStart(wrapper, { touches: [{ clientX: 20, clientY: 20 }] })
     const notPrevented = fireEvent.touchEnd(wrapper, {
@@ -207,6 +224,25 @@ describe('Terminal tap handling', () => {
       changedTouches: [{ clientX: 20, clientY: 90 }],
     })
     expect(notPrevented).toBe(true)
+    expect(onSendMouse).not.toHaveBeenCalled()
+  })
+
+  // pre(履歴)領域のタップを弾く回帰ガード。pixelToCell は範囲外を clamp するため、bounds 判定が
+  // 無いと履歴上のタップが row=1 の左クリックとしてライブ端末へ誤送信される。
+  it('pre(履歴)領域のタップはクリックを送らない(グリッド rect 外は無視)', () => {
+    const onSendMouse = vi.fn()
+    const { container } = render(
+      <Terminal grid={grid} {...baseProps} scrollback={'h1\nh2'} mouseEnabled useSgr onSendMouse={onSendMouse} />,
+    )
+    // wterm は pre の下(タップ位置 y=20 より下)にある想定の rect
+    stubWtermRect(container, { left: 0, top: 100, right: 200, bottom: 300 })
+    const wrapper = container.firstChild as HTMLElement
+    fireEvent.touchStart(wrapper, { touches: [{ clientX: 20, clientY: 20 }] })
+    const notPrevented = fireEvent.touchEnd(wrapper, {
+      touches: [],
+      changedTouches: [{ clientX: 20, clientY: 20 }],
+    })
+    expect(notPrevented).toBe(false)
     expect(onSendMouse).not.toHaveBeenCalled()
   })
 })

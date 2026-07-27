@@ -192,7 +192,6 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
 
   // Poll terminal content for the selected surface (tab). Browser surfaces are
   // rendered in an iframe instead, so their (base64) read_text is never polled.
-  // History モード中はライブ更新を止め、スクロールバックを固定表示する。
   useEffect(() => {
     if (status !== 'connected' || !currentSurface || isBrowserSurface) {
       if (pollRef.current) clearInterval(pollRef.current)

@@ -220,6 +220,9 @@ export function Terminal({
       const el = wrapperRef.current?.querySelector<HTMLElement>('.wterm')
       if (!el || !grid) return null
       const rect = el.getBoundingClientRect()
+      // <pre>(スクロールバック) 上のタップを弾く。pixelToCell は範囲外を clamp するため、
+      // 判定しないと履歴領域のタップが row=1 のクリックとしてライブ端末へ誤送信される。
+      if (clientX < rect.left || clientX >= rect.right || clientY < rect.top || clientY >= rect.bottom) return null
       const { cellWidth, cellHeight } = cellSize({
         contentWidth: el.offsetWidth,
         contentHeight: el.offsetHeight,
