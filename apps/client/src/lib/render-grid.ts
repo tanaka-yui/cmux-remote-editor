@@ -88,7 +88,7 @@ export function renderGridToAnsi(grid: RenderGrid): string {
   // [3J を毎フレーム発行することで、ライブポール毎に scrollback が積み増しされ
   // (1) タブ切替で旧サーフェスの過去フレームが透ける、(2) scrollHeight が伸び続けて
   // 最下部に追いつけなくなる、の両不具合を断つ。grid モードでは scrollback は
-  // 使わない(履歴は historyMode で readText 経由で取り直す)ため副作用なし。
+  // 使わない(履歴は wterm 外の <pre> に readText 経由で描画する)ため副作用なし。
   const parts: string[] = [`${ESC}[2J${ESC}[3J${ESC}[H`]
 
   // 行ごとに span をまとめ、行頭から「隙間を空白で埋めつつ」連続描画する。span を絶対位置(ESC[colH)で
