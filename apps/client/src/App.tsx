@@ -15,6 +15,7 @@ import { deriveMouseMode } from './lib/mouse-mode'
 import { isPushSubscribed, isPushSupported, subscribeToPush, unsubscribeFromPush } from './lib/push'
 import type { RenderGrid } from './lib/render-grid'
 import { isStaleSurfaceError } from './lib/rpc-error'
+import { stripVisibleScreen, visibleLineCount } from './lib/scrollback'
 import { loadHistoryLines, loadPushEnabled, saveHistoryLines, savePushEnabled } from './lib/settings'
 import { loadSurfaceScreen, saveSurfaceScreen } from './lib/surface-cache'
 import { encodeKey, isAppCursorMode } from './lib/terminal-keys'
@@ -76,11 +77,11 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
   const [drawerOpen, setDrawerOpen] = useState(
     () => typeof window !== 'undefined' && window.innerWidth >= DESKTOP_BREAKPOINT,
   )
-  const [termContent, setTermContent] = useState('')
+  // グリッドの上へ常時併記するスクロールバック(履歴・seam 除去済み)と、
+  // 表示中内容の取得時刻(オフライン保持の鮮度表示用)。
+  const [termHistory, setTermHistory] = useState('')
   const [termGrid, setTermGrid] = useState<RenderGrid | null>(null)
   const [fontSize, setFontSize] = useState(DEFAULT_FONT_SIZE)
-  // 履歴(スクロールバック)モードと、表示中内容の取得時刻(オフライン保持の鮮度表示用)。
-  const [historyMode, setHistoryMode] = useState(false)
   const [lastUpdated, setLastUpdated] = useState<number | null>(null)
   // 履歴で取得する行数(設定モーダルで調整、localStorage 永続)と、設定モーダルの開閉。
   const [historyLines, setHistoryLines] = useState(loadHistoryLines)
@@ -92,6 +93,15 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
   // stale-surface エラーで再取得を試みた surface。同一 surface での再取得ループを防ぐ
   // （surface ごとに 1 回だけ resync する）。ポーリング成功でリセット。
   const staleResyncRef = useRef<string | null>(null)
+  // 最下部ピン留め(Terminal から通知)。ピン留め中のみ scrollback を取得する＝上へ遡って
+  // 読んでいる間はフェッチ自体を止めて表示据え置き(読んでいる行が流れない)＋帯域節約。
+  const pinnedRef = useRef(true)
+  const onPinnedChange = useCallback((pinned: boolean) => {
+    pinnedRef.current = pinned
+  }, [])
+  // localStorage への scrollback 書込を「内容が変わった時のみ」にするための前回値
+  // (毎秒 200KB 級の JSON 書込によるジャンク防止)。
+  const lastScrollbackRef = useRef<string | null>(null)
 
   const currentSurfaceInfo = surfaces.find((s) => s.ref === currentSurface)
   const isBrowserSurface = currentSurfaceInfo?.type === 'browser'
@@ -158,18 +168,25 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
 
   // Surface 切替時はまずキャッシュから即座にハイドレートし、切断/リロード直後でも
   // 「直前までの履歴」を空白にせず表示する。ライブポーリングが繋がれば上書きされる。
-  // タブを切り替えたら履歴モードはライブへ戻す。
+  // 切替時はピン留め(最下部＝最新)へ戻す。grid があるキャッシュは scrollback から画面ぶんを
+  // 削って併記用の履歴に、grid が無ければ(停止端末/旧キャッシュ) scrollback→text を全文表示する。
   useEffect(() => {
-    setHistoryMode(false)
+    pinnedRef.current = true
+    lastScrollbackRef.current = null
     if (!currentSurface) {
       setTermGrid(null)
-      setTermContent('')
+      setTermHistory('')
       setLastUpdated(null)
       return
     }
     const cached = loadSurfaceScreen(currentSurface)
-    setTermGrid(cached?.grid ?? null)
-    setTermContent(cached?.text ?? '')
+    const grid = cached?.grid ?? null
+    setTermGrid(grid)
+    setTermHistory(
+      grid
+        ? stripVisibleScreen(cached?.scrollback ?? '', visibleLineCount(grid))
+        : (cached?.scrollback ?? cached?.text ?? ''),
+    )
     setLastUpdated(cached?.updatedAt ?? null)
   }, [currentSurface])
 
@@ -177,7 +194,7 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
   // rendered in an iframe instead, so their (base64) read_text is never polled.
   // History モード中はライブ更新を止め、スクロールバックを固定表示する。
   useEffect(() => {
-    if (status !== 'connected' || !currentSurface || isBrowserSurface || historyMode) {
+    if (status !== 'connected' || !currentSurface || isBrowserSurface) {
       if (pollRef.current) clearInterval(pollRef.current)
       return
     }
@@ -197,6 +214,21 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
         // 停止端末で grid が null のときは undefined を渡し、直近の正常グリッドを潰さず引き継ぐ。
         saveSurfaceScreen(currentSurface, { grid: grid ?? undefined, updatedAt: now })
         staleResyncRef.current = null
+
+        // スクロールバック(履歴)は最下部ピン留め中のみ取得する。上へ遡って読んでいる間は
+        // フェッチ自体をスキップ＝<pre> の内容が凍結され、読んでいる行が流れない(最下部復帰で
+        // 次ポーリングが追いつく)。alternate screen(TUI)にスクロールバックの概念はなく、停止端末
+        // (grid なし)は read_text 自体が失敗するため、いずれも取得しない。seam の削りは
+        // 「同ポーリングの grid」で行う(レンダー時に削り直すと凍結中の表示が動いてしまう)。
+        if (pinnedRef.current && grid && grid.active_screen !== 'alternate') {
+          const text = await readText(currentSurface, { scrollback: true, lines: historyLines })
+          if (cancelled) return
+          setTermHistory(stripVisibleScreen(text, visibleLineCount(grid)))
+          if (text !== lastScrollbackRef.current) {
+            lastScrollbackRef.current = text
+            saveSurfaceScreen(currentSurface, { scrollback: text, updatedAt: now })
+          }
+        }
       } catch (err) {
         if (cancelled) return
         // currentSurface が「閉じられた surface」を指すと cmux は terminal.replay に
@@ -239,53 +271,18 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
       window.removeEventListener('pageshow', resume)
       window.removeEventListener('focus', resume)
     }
-  }, [status, currentSurface, currentWorkspace, isBrowserSurface, historyMode, readGrid, listSurfaces])
-
-  // 履歴モード: スクロールバックを 1 回取得して固定表示。取得分はオフライン閲覧用に
-  // キャッシュする。切断中は取得済みキャッシュ(scrollback→text)へフォールバックする。
-  useEffect(() => {
-    if (!historyMode || !currentSurface) return
-
-    if (status !== 'connected') {
-      const cached = loadSurfaceScreen(currentSurface)
-      if (cached) {
-        setTermContent(cached.scrollback ?? cached.text ?? '')
-        setLastUpdated(cached.updatedAt)
-      }
-      return
-    }
-
-    let cancelled = false
-    readText(currentSurface, { scrollback: true, lines: historyLines })
-      .then((text) => {
-        if (cancelled) return
-        setTermContent(text)
-        const now = Date.now()
-        setLastUpdated(now)
-        saveSurfaceScreen(currentSurface, { text, scrollback: text, updatedAt: now })
-      })
-      .catch((err) => console.error('[app] History fetch error:', err))
-
-    return () => {
-      cancelled = true
-    }
-  }, [historyMode, currentSurface, status, readText, historyLines])
+  }, [status, currentSurface, currentWorkspace, isBrowserSurface, historyLines, readGrid, readText, listSurfaces])
 
   // Mouse mode (from the live grid's DECSET modes) gates tap/click forwarding.
-  // History mode shows static text, so treat it as no live grid (mouse off).
-  const mouseMode = deriveMouseMode(historyMode ? null : termGrid)
-  // 方向キーの \x1b[ / \x1bO 出し分け用（DECCKM）。履歴モードはライブグリッド無し扱い。
-  const appCursor = isAppCursorMode(historyMode ? null : termGrid)
+  const mouseMode = deriveMouseMode(termGrid)
+  // 方向キーの \x1b[ / \x1bO 出し分け用（DECCKM）。
+  const appCursor = isAppCursorMode(termGrid)
 
   // Terminal の二本指ピンチからフォントサイズを増減する（+1 拡大 / -1 縮小）。
   // タブ切替スワイプは廃止し、二本指パンは Terminal 内のスクロールで完結する。
   const adjustFontSize = useCallback((delta: number) => {
     setFontSize((s) => Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, s + delta)))
   }, [])
-
-  // ライブ上端での上スクロールで遡り（履歴）へ、遡り後の最下部復帰でライブへ。Terminal から呼ばれる。
-  const enterHistory = useCallback(() => setHistoryMode(true), [])
-  const exitHistory = useCallback(() => setHistoryMode(false), [])
 
   // Web Push: マウント後に実際の購読状態でトグルを補正する（localStorage の楽観値を上書き）。
   useEffect(() => {
@@ -408,7 +405,6 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
           onMenuToggle={() => setDrawerOpen((o) => !o)}
           status={status}
           lastUpdated={lastUpdated}
-          historyMode={historyMode}
           onOpenSettings={() => setSettingsOpen(true)}
         />
 
@@ -434,8 +430,10 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
             <BrowserView url={currentSurfaceInfo?.url ?? ''} title={currentSurfaceInfo?.title ?? ''} />
           ) : (
             <Terminal
-              grid={historyMode ? null : termGrid}
-              content={termContent}
+              grid={termGrid}
+              // alternate screen(TUI) 中は履歴を出さない(スクロールバックの概念がなく、上に
+              // primary の履歴が見えると混乱する)。state は保持し primary 復帰で即再表示する。
+              scrollback={termGrid?.active_screen === 'alternate' ? '' : termHistory}
               fontSize={fontSize}
               mouseEnabled={mouseMode.mouseEnabled}
               useSgr={mouseMode.useSgr}
@@ -444,8 +442,8 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
                   sendText(currentSurface, text).catch((err) => console.error('[app] mouse error:', err))
               }}
               onAdjustFontSize={adjustFontSize}
-              onEnterHistory={enterHistory}
-              onExitHistory={exitHistory}
+              onPinnedChange={onPinnedChange}
+              resetKey={currentSurface}
             />
           )}
         </ErrorBoundary>

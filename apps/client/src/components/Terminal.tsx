@@ -1,18 +1,19 @@
 import { useTerminal, Terminal as WTerminal } from '@wterm/react'
-import type { CSSProperties, TouchEvent as ReactTouchEvent, WheelEvent as ReactWheelEvent } from 'react'
+import type { CSSProperties, TouchEvent as ReactTouchEvent } from 'react'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import '@wterm/react/css'
 import { centroid, isTap, touchDistance } from '../lib/multitouch'
 import { type RenderGrid, renderGridToAnsi } from '../lib/render-grid'
-import { isAtBottom, isOverscrollUp } from '../lib/scroll-intent'
+import { isAtBottom } from '../lib/scroll-intent'
 import { encodeClick } from '../lib/sgr-mouse'
 import { cellSize, pixelToCell } from '../lib/terminal-coords'
 
 interface TerminalProps {
-  // ライブ/オフライン表示用の描画グリッド。null のとき content(プレーンテキスト)を描く。
+  // ライブ表示用の描画グリッド。null のとき scrollback(プレーンテキスト)のみを描く。
   grid: RenderGrid | null
-  // 履歴(スクロールバック)モード等のプレーンテキスト。grid が null のときのみ使う。
-  content: string
+  // グリッドの上へ常時併記するスクロールバック(履歴・プレーンテキスト、seam 除去済み)。
+  // grid=null(停止端末/オフライン)のときは画面込みの全文が渡る。空文字なら描画しない。
+  scrollback: string
   fontSize: number
   // マウス送信（render_grid.modes から App が導出）。
   mouseEnabled: boolean
@@ -20,13 +21,13 @@ interface TerminalProps {
   onSendMouse: (text: string) => void
   // 二本指ピンチでのフォントサイズ増減（+1 = 拡大 / -1 = 縮小）。
   onAdjustFontSize: (delta: number) => void
-  // ライブ上端での上方向オーバースクロールで遡り（履歴）へ入る。
-  onEnterHistory: () => void
-  // 遡り中、上へ遡った後に最下部へ戻ったらライブへ復帰する。
-  onExitHistory: () => void
+  // 最下部ピン留め状態の変化通知。App が scrollback フェッチの可否（据え置き）に使う。
+  onPinnedChange: (pinned: boolean) => void
+  // サーフェス切替でピン留め＋最下部へリセットするためのキー。
+  resetKey: string | null
 }
 
-// 履歴(プレーンテキスト)の <pre> 描画用整形。末尾空白を落として横幅の無駄な肥大
+// スクロールバックの <pre> 描画用整形。末尾空白を落として横幅の無駄な肥大
 // （read_text は行を cols 幅まで空白で埋める）を防ぐ。行頭インデントは保持する。
 function cleanScreen(content: string): string {
   return content
@@ -37,14 +38,10 @@ function cleanScreen(content: string): string {
 
 const PADDING = 8
 // Latin/CJK の両方をこの 2:1 等幅フォントで描き、全角を確実に 2×Latin にする(セル=cmux と一致)。
-// 未ロード時のフォールバックに Menlo 系を残す。wterm(--term-font-family)と履歴の <pre> で共用する。
+// 未ロード時のフォールバックに Menlo 系を残す。wterm(--term-font-family)とスクロールバックの <pre> で共用する。
 const TERM_FONT_FAMILY = "'M PLUS 1 Code', Menlo, Consolas, 'DejaVu Sans Mono', 'Courier New', monospace"
 // ピンチでフォントを 1 段変えるのに必要な指間距離の変化（px）。
 const PINCH_STEP_PX = 32
-// ライブ上端での「過去方向オーバースクロール」で遡りへ入る閾値。wheel は deltaY(px 相当)、
-// touch はジェスチャー開始からの指の下方向移動量(px)。
-const WHEEL_ENTER_THRESHOLD = 8
-const TOUCH_ENTER_THRESHOLD = 48
 
 // アクティブなタッチジェスチャーの状態。スクロールはブラウザのネイティブに任せ、ここでは
 // タップ/ピンチ/右クリックだけを判定する。閾値を超えて動いた or ピンチした場合は moved=true で、
@@ -55,14 +52,14 @@ type GestureState =
 
 export function Terminal({
   grid,
-  content,
+  scrollback,
   fontSize,
   mouseEnabled,
   useSgr,
   onSendMouse,
   onAdjustFontSize,
-  onEnterHistory,
-  onExitHistory,
+  onPinnedChange,
+  resetKey,
 }: TerminalProps) {
   const { ref, write } = useTerminal()
   const gridRef = useRef<RenderGrid | null>(null)
@@ -71,9 +68,10 @@ export function Terminal({
   // grid モードの横幅に使う実測コンテンツ幅(px)。0 のうちは下の termStyle が cols*ch フォールバック。
   const [measuredWidth, setMeasuredWidth] = useState(0)
 
-  // wterm に書くのは grid のみ。プレーンテキスト(履歴/オフライン)は wterm の WASM スクロールバックが
-  // 1000 行でハードコード頭打ち(変更 API なし)のため wterm に流さず、下の <pre> に全行を直描画する。
-  // これが無いと設定の履歴バッファ(historyLines)を 1000 超に上げても遡れる範囲が変わらない。
+  // wterm に書くのは grid のみ。プレーンテキスト(スクロールバック/オフライン)は wterm の WASM
+  // スクロールバックが 1000 行でハードコード頭打ち(変更 API なし)のため wterm に流さず、
+  // <pre> に全行を直描画する。これが無いと設定の履歴バッファ(historyLines)を 1000 超に
+  // 上げても遡れる範囲が変わらない。
   const repaint = useCallback(
     (g: RenderGrid | null) => {
       if (g) write(renderGridToAnsi(g))
@@ -102,7 +100,7 @@ export function Terminal({
   // より広い)実最長行幅を反映するのでそれを採る。grow-only(既存以下は無視)にして、wterm が再描画で
   // grid DOM を一瞬空にするフレームや縮小フレームでも明示幅を絶対に潰さない=左へ飛ぶチラつきを断つ。
   const measure = useCallback(() => {
-    // grid モード時のみ。履歴/プレーンテキスト(grid=null)は termStyle が width を付けず measuredWidth を
+    // grid モード時のみ。プレーンテキスト(grid=null)は termStyle が width を付けず measuredWidth を
     // 使わないので、長いスクロールバック行で値を肥大(=grid 復帰時の過剰確保)させないよう測らない。
     if (!gridRef.current) return
     const gridEl = wrapperRef.current?.querySelector('.term-grid')
@@ -165,69 +163,48 @@ export function Terminal({
   // render_grid 欠落→undefined になった grid が cols={grid.columns} まで到達して落ちる。
   const useGrid = grid != null
 
-  // 遡り（grid なし）中の「最下部復帰 → ライブ再開」検知。進入直後は wterm が末尾へ自動追従して
-  // 最下部にいるため、一度上へ離れて（hasScrolledUp）から最下部へ戻った時のみ発火させ即バウンドを防ぐ。
-  // scroll は bubble しないが capture 段なら子（.wterm）の scroll も拾える。実際にスクロールする要素
-  //（.wterm が height:100%+has-scrollback のときは .wterm、伸びた場合は wrapper）の双方に対応できる。
-  const hasScrolledUpRef = useRef(false)
+  // 最下部ピン留め。wrapper の scroll（capture 段＝子要素がスクロールする構成でも拾える）で
+  // isAtBottom を判定し、変化時のみ App へ通知する。App はピン留め中のみ scrollback をフェッチする
+  // ため、上へ遡って読んでいる間は <pre> が据え置きになる（読んでいる行が流れない）。
+  const pinnedRef = useRef(true)
   useEffect(() => {
     const wrapper = wrapperRef.current
-    if (useGrid || !wrapper) {
-      hasScrolledUpRef.current = false
-      return
-    }
+    if (!wrapper) return
     const onScroll = (e: Event) => {
       const el = e.target as HTMLElement | null
       if (!el || typeof el.scrollTop !== 'number') return
-      const atBottom = isAtBottom({
+      const pinned = isAtBottom({
         scrollTop: el.scrollTop,
         clientHeight: el.clientHeight,
         scrollHeight: el.scrollHeight,
       })
-      if (!atBottom) hasScrolledUpRef.current = true
-      else if (hasScrolledUpRef.current) onExitHistory()
+      if (pinned !== pinnedRef.current) {
+        pinnedRef.current = pinned
+        onPinnedChange(pinned)
+      }
     }
     wrapper.addEventListener('scroll', onScroll, true)
     return () => wrapper.removeEventListener('scroll', onScroll, true)
-  }, [useGrid, onExitHistory])
+  }, [onPinnedChange])
 
-  // 履歴(プレーンテキスト)進入時・内容到着時に wrapper を最下部(最新)へ合わせる。従来は wterm の
-  // 書込み後末尾追従に頼っていたが、<pre> 直描画では自前で合わせる。強制スクロール自体を
-  // 「一度上へ遡った」と誤認して即ライブ復帰しないよう hasScrolledUp をリセットする。
-  // biome-ignore lint/correctness/useExhaustiveDependencies: content は履歴到着時の再スクロールトリガーで本体では未参照。
+  // サーフェス切替(resetKey 変化)時はピン留めへ戻し最下部から再開する。下の追従 effect より
+  // 先に宣言し、同一コミットで両方発火しても「リセット→追従」の順で整合させる。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: resetKey は切替検知トリガーで本体では未参照。
   useLayoutEffect(() => {
-    if (useGrid) return
+    pinnedRef.current = true
     const el = wrapperRef.current
-    if (!el) return
-    el.scrollTop = el.scrollHeight
-    hasScrolledUpRef.current = false
-  }, [useGrid, content])
+    if (el) el.scrollTop = el.scrollHeight
+  }, [resetKey])
 
-  // 履歴→ライブ復帰時に wrapper を最下部(最新)へ戻す。履歴中は wrapper が長い <pre> をスクロール
-  // しており scrollTop が任意位置にある。復帰で <pre> が消え .wterm が rows 由来の高さ(viewport より
-  // 高いことが多い)になると、戻さない限り最新行が下に隠れる/半端な位置に残る。grid 化の
-  // 立ち上がり(false→true)だけで実行する: 毎ポーリングで動かすと上スクロールでの履歴進入ができなくなる。
-  const prevUseGridRef = useRef(useGrid)
-  useEffect(() => {
-    const wasGrid = prevUseGridRef.current
-    prevUseGridRef.current = useGrid
-    if (!useGrid || wasGrid) return
-    const wrapper = wrapperRef.current
-    if (!wrapper) return
-    // grid の高さは @wterm が rows から付与する。wterm/自前の rAF 後にレイアウトが確定するため
-    // 二重 rAF で確定後に最下部へ合わせる。
-    let raf2 = 0
-    const raf1 = requestAnimationFrame(() => {
-      raf2 = requestAnimationFrame(() => {
-        const el = wrapperRef.current
-        if (el) el.scrollTop = el.scrollHeight
-      })
-    })
-    return () => {
-      cancelAnimationFrame(raf1)
-      cancelAnimationFrame(raf2)
-    }
-  }, [useGrid])
+  // ピン留め中の末尾追従。<pre>(scrollback)/grid の高さ変化・フォント変更のたびに最下部へ合わせる。
+  // 非ピン中は一切触らない（ネイティブ慣性・読取位置を維持）。プログラム的な scrollTop 代入も
+  // scroll イベントを発火するが、最下部への代入は isAtBottom=true → pinned 変化なしで無害。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: grid/scrollback/fontSize は高さ変化のトリガーで本体では未参照。
+  useLayoutEffect(() => {
+    if (!pinnedRef.current) return
+    const el = wrapperRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [grid, scrollback, fontSize])
 
   const gestureStateRef = useRef<GestureState | null>(null)
 
@@ -236,14 +213,16 @@ export function Terminal({
   const clickActive = mouseEnabled && useSgr && grid !== null
 
   // クライアント座標 → 1-based セル位置。grid 不在なら null。
+  // 上に <pre>(スクロールバック) が積まれるため wrapper でなく .wterm(グリッド描画要素) を基準にする。
+  // rect はスクロール済み位置を反映するので scrollLeft/scrollTop の補正は不要(0 を渡す)。
   const pointToCell = useCallback(
     (clientX: number, clientY: number) => {
-      const el = wrapperRef.current
+      const el = wrapperRef.current?.querySelector<HTMLElement>('.wterm')
       if (!el || !grid) return null
       const rect = el.getBoundingClientRect()
       const { cellWidth, cellHeight } = cellSize({
-        contentWidth: el.scrollWidth,
-        contentHeight: el.scrollHeight,
+        contentWidth: el.offsetWidth,
+        contentHeight: el.offsetHeight,
         cols: grid.columns,
         rows: grid.rows,
         padding: PADDING,
@@ -253,8 +232,8 @@ export function Terminal({
         clientY,
         rectLeft: rect.left,
         rectTop: rect.top,
-        scrollLeft: el.scrollLeft,
-        scrollTop: el.scrollTop,
+        scrollLeft: 0,
+        scrollTop: 0,
         cellWidth,
         cellHeight,
         padding: PADDING,
@@ -294,21 +273,6 @@ export function Terminal({
         // 一本指の縦横スクロールはブラウザのネイティブに任せる（preventDefault しないので慣性が残る）。
         // 閾値を超えて動いたらタップではなくスクロールと判定する。
         if (a && !isTap(a.clientX - state.startX, a.clientY - state.startY)) state.moved = true
-        // ライブ中（TUI でマウス取得中は横取りしない）、上端で下方向ドラッグ（=過去を遡る方向）が閾値を
-        // 超えたら遡りへ。deltaY は startY - 現在Y（指が下に動く=負）。
-        if (a && useGrid && !mouseEnabled) {
-          const el = wrapperRef.current
-          if (
-            el &&
-            isOverscrollUp({
-              scrollTop: el.scrollTop,
-              deltaY: state.startY - a.clientY,
-              threshold: TOUCH_ENTER_THRESHOLD,
-            })
-          ) {
-            onEnterHistory()
-          }
-        }
         return
       }
 
@@ -332,7 +296,7 @@ export function Terminal({
       }
       if (!isTap(c.x - state.centerX, c.y - state.centerY)) state.moved = true
     },
-    [onAdjustFontSize, useGrid, mouseEnabled, onEnterHistory],
+    [onAdjustFontSize],
   )
 
   const onTouchEnd = useCallback(
@@ -367,26 +331,12 @@ export function Terminal({
     gestureStateRef.current = null
   }, [])
 
-  // デスクトップ: ライブ上端での上方向ホイールで遡りへ。
-  const onWheel = useCallback(
-    (e: ReactWheelEvent<HTMLDivElement>) => {
-      if (!useGrid || mouseEnabled) return
-      const el = wrapperRef.current
-      if (el && isOverscrollUp({ scrollTop: el.scrollTop, deltaY: e.deltaY, threshold: WHEEL_ENTER_THRESHOLD })) {
-        onEnterHistory()
-      }
-    },
-    [useGrid, mouseEnabled, onEnterHistory],
-  )
-
   const wrapperStyle: CSSProperties = {
     flex: 1,
     minHeight: 0,
     width: '100%',
-    // grid モードは横(cols がスマホ幅超)、履歴(プレーンテキスト)モードは縦(スクロールバック)に
-    // スクロールさせる。常に auto。履歴は下の .wterm 自身が has-scrollback で縦スクロールするが、
-    // .wterm の高さ(100%)が解決できない環境でも content がビューポートを超えたら wrapper 側で
-    // 受けてスクロール可能にする(保険)。従来の 'hidden' は履歴の overflow をクリップし動かせなかった。
+    // <pre>(スクロールバック)＋wterm(ライブ) の縦積みを縦に、cols がスマホ幅を超える grid や
+    // 長いスクロールバック行を横に、ひとつのネイティブスクロールで扱う。
     overflow: 'auto',
     // 一本指でブラウザのネイティブ縦横スクロール（慣性付き）。タップ/右クリックは touchend で判定する。
     touchAction: 'pan-x pan-y',
@@ -416,18 +366,19 @@ export function Terminal({
     '--term-fg': '#e0e0e0',
     '--term-cursor': '#e0e0e0',
     '--term-font-size': `${fontSize}px`,
-    // 履歴(プレーンテキスト)モードは wterm を隠し、下の <pre> が全行を描画する（wterm の WASM
-    // スクロールバックは 1000 行で頭打ちのため使わない）。grid モードは WTerminal が rows 由来の
-    // 固定高(mergedStyle)を付けるため display キーを入れない条件付きスプレッドにする。
+    // grid が無い(停止端末/オフライン)ときは wterm を隠し、上の <pre> だけが全文を描画する。
+    // grid モードは WTerminal が rows 由来の固定高(mergedStyle)を付けるため display キーを
+    // 入れない条件付きスプレッドにする。
     ...(useGrid ? {} : { display: 'none' }),
   } as CSSProperties
 
-  // 履歴(プレーンテキスト)の <pre>。wterm と同じ見た目(フォント/行高/余白/前景色)に合わせる。
+  // スクロールバック(プレーンテキスト)の <pre>。wterm と同じ見た目(フォント/余白/前景色)に合わせる。
   // ターミナルのビューポートは全テーマでダーク固定のため配色は wterm の --term-* と同じ実値。
   // 長行は折り返さず width:max-content で最長行まで箱を広げ、wrapper の横スクロールで見る。
+  // 下に wterm(padding 8) が続くため paddingBottom は 0 にして seam の隙間を二重にしない。
   const preStyle: CSSProperties = {
     margin: 0,
-    padding: PADDING,
+    padding: `${PADDING}px ${PADDING}px 0 ${PADDING}px`,
     fontFamily: TERM_FONT_FAMILY,
     fontSize: `${fontSize}px`,
     lineHeight: 1.2,
@@ -445,8 +396,8 @@ export function Terminal({
       onTouchMove={onTouchMove}
       onTouchEnd={onTouchEnd}
       onTouchCancel={onTouchCancel}
-      onWheel={onWheel}
     >
+      {scrollback !== '' && <pre style={preStyle}>{cleanScreen(scrollback)}</pre>}
       <WTerminal
         ref={ref}
         autoResize={!useGrid}
@@ -457,7 +408,6 @@ export function Terminal({
         onReady={onReady}
         style={termStyle}
       />
-      {!useGrid && <pre style={preStyle}>{cleanScreen(content)}</pre>}
     </div>
   )
 }
