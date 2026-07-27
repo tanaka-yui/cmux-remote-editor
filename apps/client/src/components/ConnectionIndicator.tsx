@@ -6,9 +6,8 @@ const OFFLINE_GRACE_MS = 2000
 
 interface ConnectionIndicatorProps {
   status: ConnectionStatus
-  // 表示中の内容が取得された時刻(epoch ms)。切断/履歴モード時に「いつの内容か」を示す。
+  // 表示中の内容が取得された時刻(epoch ms)。切断中に「いつの内容か」を示す。
   lastUpdated?: number | null
-  historyMode?: boolean
 }
 
 function formatClock(epochMs: number): string {
@@ -24,8 +23,8 @@ const STATUS_CONFIG: Record<ConnectionStatus, { label: string; color: string }> 
   disconnected: { label: 'Disconnected', color: 'var(--color-danger)' },
 }
 
-// 接続状態（ドット＋ラベル）とオフライン/履歴の鮮度表示。Header の右側に置く。
-export function ConnectionIndicator({ status, lastUpdated, historyMode }: ConnectionIndicatorProps) {
+// 接続状態（ドット＋ラベル）とオフラインの鮮度表示。Header の右側に置く。
+export function ConnectionIndicator({ status, lastUpdated }: ConnectionIndicatorProps) {
   // 接続済みからの一瞬の切断はチラつかせない。connected は即時、初回接続中(まだ未接続)も即時、
   // connected→切断のときだけ OFFLINE_GRACE_MS 遅延して反映する。
   const [shownStatus, setShownStatus] = useState<ConnectionStatus>(status)
@@ -41,11 +40,9 @@ export function ConnectionIndicator({ status, lastUpdated, historyMode }: Connec
 
   const config = STATUS_CONFIG[shownStatus]
 
-  // 切断中（オフライン保持）や履歴モードでは、表示内容がいつ時点のものかを明示する。
+  // 切断中（オフライン保持）は、表示内容がいつ時点のものかを明示する。
   let notice: string | null = null
-  if (historyMode) {
-    notice = lastUpdated ? `履歴 · ${formatClock(lastUpdated)}時点` : '履歴'
-  } else if (shownStatus !== 'connected' && lastUpdated) {
+  if (shownStatus !== 'connected' && lastUpdated) {
     notice = `オフライン · 最終 ${formatClock(lastUpdated)}`
   }
 
@@ -60,7 +57,7 @@ export function ConnectionIndicator({ status, lastUpdated, historyMode }: Connec
         whiteSpace: 'nowrap',
       }}
     >
-      {notice && <span style={{ color: historyMode ? 'var(--color-accent)' : 'var(--color-warning)' }}>{notice}</span>}
+      {notice && <span style={{ color: 'var(--color-warning)' }}>{notice}</span>}
       <span
         style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: config.color, display: 'inline-block' }}
       />

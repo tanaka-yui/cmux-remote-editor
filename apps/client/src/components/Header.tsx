@@ -8,7 +8,6 @@ interface HeaderProps {
   showMenuButton?: boolean
   status: ConnectionStatus
   lastUpdated?: number | null
-  historyMode?: boolean
   onOpenSettings: () => void
 }
 
@@ -18,7 +17,6 @@ export function Header({
   showMenuButton = true,
   status,
   lastUpdated,
-  historyMode,
   onOpenSettings,
 }: HeaderProps) {
   return (
@@ -67,7 +65,7 @@ export function Header({
         {workspaceName ?? 'cmux Remote'}
       </span>
       <div style={{ marginLeft: 8, display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-        <ConnectionIndicator status={status} lastUpdated={lastUpdated} historyMode={historyMode} />
+        <ConnectionIndicator status={status} lastUpdated={lastUpdated} />
         <button
           type="button"
           onClick={onOpenSettings}
