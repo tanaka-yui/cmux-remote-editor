@@ -1,5 +1,5 @@
-// 履歴(スクロールバック)で取得する行数の設定。localStorage に永続化する。値は readText の
-// scrollback lines に渡る。多すぎると取得/描画が重くなるため下限・上限でクランプする。
+// ライブ表示で上へ遡れるスクロールバック行数の設定。localStorage に永続化する。値は毎秒
+// ポーリングの readText scrollback lines に渡る。多すぎると取得/描画が重くなるためクランプする。
 const KEY = 'cmux:history-lines'
 
 export const HISTORY_LINES_MIN = 1000

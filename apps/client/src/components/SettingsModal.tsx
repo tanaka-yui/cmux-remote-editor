@@ -231,8 +231,8 @@ export function SettingsModal({
             />
           </div>
           <div style={{ fontSize: 12, color: 'var(--color-text-subtle)', marginTop: 6 }}>
-            {HISTORY_LINES_MIN.toLocaleString()}〜{HISTORY_LINES_MAX.toLocaleString()} 行（履歴モードで取得する
-            スクロールバック行数。大きいほど重くなります）
+            {HISTORY_LINES_MIN.toLocaleString()}〜{HISTORY_LINES_MAX.toLocaleString()} 行（ライブ表示で上へ
+            遡れるスクロールバック行数。大きいほど重くなります）
           </div>
 
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20 }}>
