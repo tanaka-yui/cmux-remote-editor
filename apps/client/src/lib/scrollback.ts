@@ -7,6 +7,15 @@
 //   「render_grid の最終非空行 + 1」と一致する（rows で削ると下部が空の端末で履歴を削りすぎる）。
 import type { RenderGrid } from './render-grid'
 
+// スクロールバックの <pre> 描画用整形。末尾空白を落として横幅の無駄な肥大
+// （read_text は行を cols 幅まで空白で埋める）を防ぐ。行頭インデントは保持する。
+export function cleanScreen(content: string): string {
+  return content
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .join('\n')
+}
+
 // render_grid の「内容がある最終行 + 1」= read_text が画面ぶんとして返す行数。内容が無ければ 0。
 export function visibleLineCount(grid: RenderGrid): number {
   let last = -1

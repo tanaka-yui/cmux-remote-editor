@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { RenderGrid } from '../render-grid'
-import { stripVisibleScreen, visibleLineCount } from '../scrollback'
+import { cleanScreen, stripVisibleScreen, visibleLineCount } from '../scrollback'
 
 // row ごとのテキストだけ指定して RenderGrid を作るヘルパ（他フィールドは判定に関与しない）。
 function gridWith(spans: { row: number; text: string }[]): RenderGrid {
@@ -76,5 +76,19 @@ describe('stripVisibleScreen', () => {
 
   it('空文字は空文字のまま', () => {
     expect(stripVisibleScreen('', 3)).toBe('')
+  })
+})
+
+describe('cleanScreen', () => {
+  it('各行の末尾空白だけを削る', () => {
+    expect(cleanScreen('first  \nsecond\t ')).toBe('first\nsecond')
+  })
+
+  it('行頭のインデントは保持する', () => {
+    expect(cleanScreen('  indented  ')).toBe('  indented')
+  })
+
+  it('空文字は空文字のまま', () => {
+    expect(cleanScreen('')).toBe('')
   })
 })

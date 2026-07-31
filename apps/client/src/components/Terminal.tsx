@@ -4,6 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import '@wterm/react/css'
 import { centroid, isTap, touchDistance } from '../lib/multitouch'
 import { type RenderGrid, renderGridToAnsi } from '../lib/render-grid'
+import { cleanScreen } from '../lib/scrollback'
 import { isAtBottom } from '../lib/scroll-intent'
 import { encodeClick } from '../lib/sgr-mouse'
 import { cellSize, pixelToCell } from '../lib/terminal-coords'
@@ -25,15 +26,6 @@ interface TerminalProps {
   onPinnedChange: (pinned: boolean) => void
   // サーフェス切替でピン留め＋最下部へリセットするためのキー。
   resetKey: string | null
-}
-
-// スクロールバックの <pre> 描画用整形。末尾空白を落として横幅の無駄な肥大
-// （read_text は行を cols 幅まで空白で埋める）を防ぐ。行頭インデントは保持する。
-function cleanScreen(content: string): string {
-  return content
-    .split('\n')
-    .map((line) => line.trimEnd())
-    .join('\n')
 }
 
 const PADDING = 8
