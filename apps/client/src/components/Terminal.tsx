@@ -163,28 +163,26 @@ export function Terminal({
   // render_grid 欠落→undefined になった grid が cols={grid.columns} まで到達して落ちる。
   const useGrid = grid != null
 
-  // 最下部ピン留め。wrapper の scroll（capture 段＝子要素がスクロールする構成でも拾える）で
+  // 最下部ピン留め。スクロールコンテナである wrapper 自身の scroll だけを監視して
   // isAtBottom を判定し、変化時のみ App へ通知する。App はピン留め中のみ scrollback をフェッチする
   // ため、上へ遡って読んでいる間は <pre> が据え置きになる（読んでいる行が流れない）。
   const pinnedRef = useRef(true)
   useEffect(() => {
     const wrapper = wrapperRef.current
     if (!wrapper) return
-    const onScroll = (e: Event) => {
-      const el = e.target as HTMLElement | null
-      if (!el || typeof el.scrollTop !== 'number') return
+    const onScroll = () => {
       const pinned = isAtBottom({
-        scrollTop: el.scrollTop,
-        clientHeight: el.clientHeight,
-        scrollHeight: el.scrollHeight,
+        scrollTop: wrapper.scrollTop,
+        clientHeight: wrapper.clientHeight,
+        scrollHeight: wrapper.scrollHeight,
       })
       if (pinned !== pinnedRef.current) {
         pinnedRef.current = pinned
         onPinnedChange(pinned)
       }
     }
-    wrapper.addEventListener('scroll', onScroll, true)
-    return () => wrapper.removeEventListener('scroll', onScroll, true)
+    wrapper.addEventListener('scroll', onScroll)
+    return () => wrapper.removeEventListener('scroll', onScroll)
   }, [onPinnedChange])
 
   // サーフェス切替(resetKey 変化)時はピン留めへ戻し最下部から再開する。下の追従 effect より

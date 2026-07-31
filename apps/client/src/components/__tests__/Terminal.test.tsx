@@ -168,6 +168,23 @@ describe('Terminal pinned follow', () => {
     expect(onPinnedChange).toHaveBeenLastCalledWith(true)
   })
 
+  it('子孫の scroll では解除済みのピン留めを再有効化しない', () => {
+    const onPinnedChange = vi.fn()
+    const { container } = render(<Terminal grid={grid} {...baseProps} scrollback="a" onPinnedChange={onPinnedChange} />)
+    const wrapper = container.firstChild as HTMLElement
+    defineScrollMetrics(wrapper, { scrollTop: 500 })
+    fireEvent.scroll(wrapper)
+    expect(onPinnedChange).toHaveBeenLastCalledWith(false)
+    onPinnedChange.mockClear()
+
+    const child = container.querySelector<HTMLElement>('.wterm')
+    if (!child) throw new Error('wterm not found')
+    defineScrollMetrics(child, { scrollHeight: 100 })
+    child.dispatchEvent(new window.Event('scroll'))
+
+    expect(onPinnedChange).not.toHaveBeenCalled()
+  })
+
   it('resetKey 変化(サーフェス切替)でピン留めへ戻し最下部へスクロールする', () => {
     const { container, rerender } = render(<Terminal grid={grid} {...baseProps} scrollback="a" />)
     const wrapper = container.firstChild as HTMLElement
