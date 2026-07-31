@@ -21,7 +21,7 @@
   --color-key-armed-bg: #4a5a9a;
   --color-key-armed-border: #6a7ace;
   --color-key-armed-text: #ffffff;
-  --color-terminal-bg: #1a1a2e;
+  --color-terminal-bg: #1e1e1e;
   --color-link: #4fc3f7;
   --color-link-bg: #0f3460;
 }
@@ -47,7 +47,7 @@
   --color-key-armed-bg: #dbe2ff;
   --color-key-armed-border: #9db0ff;
   --color-key-armed-text: #1a1a2e;
-  --color-terminal-bg: #1a1a2e;
+  --color-terminal-bg: #1e1e1e;
   --color-link: #1565c0;
   --color-link-bg: #e3f0fc;
 }
