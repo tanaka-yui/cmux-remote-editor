@@ -11,6 +11,7 @@ import type { RenderGrid } from '../../lib/render-grid'
 const { wtermProps } = vi.hoisted(() => ({
   wtermProps: { current: {} as Record<string, unknown> },
 }))
+const { cleanScreenSpy } = vi.hoisted(() => ({ cleanScreenSpy: vi.fn() }))
 
 vi.mock('@wterm/react', () => ({
   useTerminal: () => ({ ref: { current: null }, write: () => {} }),
@@ -19,6 +20,12 @@ vi.mock('@wterm/react', () => ({
     return <div className="wterm" style={props.style as CSSProperties} />
   },
 }))
+
+vi.mock('../../lib/scrollback', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../lib/scrollback')>()
+  cleanScreenSpy.mockImplementation(actual.cleanScreen)
+  return { ...actual, cleanScreen: cleanScreenSpy }
+})
 
 import { Terminal } from '../Terminal'
 
@@ -117,6 +124,16 @@ describe('Terminal scrollback rendering', () => {
   it('scrollback が空なら pre を描画しない', () => {
     const { container } = render(<Terminal grid={grid} {...baseProps} />)
     expect(container.querySelector('pre')).toBeNull()
+  })
+
+  it('grid だけが更新されても同じ scrollback を再整形しない', () => {
+    cleanScreenSpy.mockClear()
+    const { rerender } = render(<Terminal grid={grid} {...baseProps} scrollback="history  " />)
+    expect(cleanScreenSpy).toHaveBeenCalledTimes(1)
+
+    rerender(<Terminal grid={{ ...grid, columns: 121 }} {...baseProps} scrollback="history  " />)
+
+    expect(cleanScreenSpy).toHaveBeenCalledTimes(1)
   })
 
   // wterm の WASM スクロールバックは 1000 行でハードコード頭打ちのため、プレーンテキストは

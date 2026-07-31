@@ -1,11 +1,11 @@
 import { useTerminal, Terminal as WTerminal } from '@wterm/react'
 import type { CSSProperties, TouchEvent as ReactTouchEvent } from 'react'
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import '@wterm/react/css'
 import { centroid, isTap, touchDistance } from '../lib/multitouch'
 import { type RenderGrid, renderGridToAnsi } from '../lib/render-grid'
-import { cleanScreen } from '../lib/scrollback'
 import { isAtBottom } from '../lib/scroll-intent'
+import { cleanScreen } from '../lib/scrollback'
 import { encodeClick } from '../lib/sgr-mouse'
 import { cellSize, pixelToCell } from '../lib/terminal-coords'
 
@@ -154,6 +154,7 @@ export function Terminal({
   // `!= null` で null と undefined の両方を「グリッド無し」とする。`!== null` だと停止端末で
   // render_grid 欠落→undefined になった grid が cols={grid.columns} まで到達して落ちる。
   const useGrid = grid != null
+  const cleanedScrollback = useMemo(() => cleanScreen(scrollback), [scrollback])
 
   // 最下部ピン留め。スクロールコンテナである wrapper 自身の scroll だけを監視して
   // isAtBottom を判定し、変化時のみ App へ通知する。App はピン留め中のみ scrollback をフェッチする
@@ -390,7 +391,7 @@ export function Terminal({
       onTouchEnd={onTouchEnd}
       onTouchCancel={onTouchCancel}
     >
-      {scrollback !== '' && <pre style={preStyle}>{cleanScreen(scrollback)}</pre>}
+      {scrollback !== '' && <pre style={preStyle}>{cleanedScrollback}</pre>}
       <WTerminal
         ref={ref}
         autoResize={!useGrid}
