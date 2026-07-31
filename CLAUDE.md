@@ -33,6 +33,9 @@ pnpm start / stop    # サーバーをホスト常駐起動 + クライアント
 pnpm server:up|down|status|restart|logs   # ホスト常駐サーバーの管理（ログ: apps/server/.run/server.log）
 ```
 
+クライアントを更新した後の `pnpm start` はイメージを自動再ビルドする（以前は `pnpm bootstrap` が必要だった）。
+デプロイは canonical checkout から行う。worktree には証明書がなく、compose project 名も異なる。
+
 ## アーキテクチャ
 
 ```

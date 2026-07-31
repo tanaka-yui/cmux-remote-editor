@@ -21,7 +21,7 @@
     "server:up": "pnpm --filter @tanaka-yui/cmux-remote-editor-server start:bg",
     "sort-package": "sort-package-json --check ./package.json ./apps/*/package.json",
     "sort-package:fix": "sort-package-json ./package.json ./apps/*/package.json",
-    "start": "test -f certs/server.pem || { echo 'certs/server.pem not found — run: pnpm certs:setup'; exit 1; }; pnpm server:up && docker compose up -d && TOKEN=\"${CMUX_REMOTE_TOKEN:-$(sed -n 's/^CMUX_REMOTE_TOKEN=//p' apps/server/.env 2>/dev/null | head -1)}\" && TOKEN=\"${TOKEN:-$(cat apps/server/.run/token 2>/dev/null)}\" && echo \"Up. PWA (first connect, token included): https://$(scutil --get LocalHostName).local:48710/?token=${TOKEN:-<see pnpm server:logs>} | http://...:48700 redirects to https | server logs: pnpm server:logs | stop: pnpm stop\"",
+    "start": "test -f certs/server.pem || { echo 'certs/server.pem not found — run: pnpm certs:setup'; exit 1; }; pnpm server:up && docker compose up -d --build && TOKEN=\"${CMUX_REMOTE_TOKEN:-$(sed -n 's/^CMUX_REMOTE_TOKEN=//p' apps/server/.env 2>/dev/null | head -1)}\" && TOKEN=\"${TOKEN:-$(cat apps/server/.run/token 2>/dev/null)}\" && echo \"Up. PWA (first connect, token included): https://$(scutil --get LocalHostName).local:48710/?token=${TOKEN:-<see pnpm server:logs>} | http://...:48700 redirects to https | server logs: pnpm server:logs | stop: pnpm stop\"",
     "stop": "docker compose stop && pnpm server:down",
     "test": "turbo run test"
   },
