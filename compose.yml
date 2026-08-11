@@ -1,9 +1,13 @@
 # Only the client (nginx PWA) runs in Docker.
 #
-# The Bun bridge server must talk to the cmux Unix socket, and cmux only accepts
-# connections from processes started *inside* cmux (access_mode: cmuxOnly). A
-# container is a separate process tree and is always rejected, so the server runs
-# on the host instead — start it from a cmux terminal with `pnpm server:up`.
+# The Bun bridge server cannot run in a container: Rancher Desktop (Lima VM /
+# virtiofs) exposes a bind-mounted host Unix socket as a file node but does not
+# proxy connect() across the VM boundary ("Not supported"), so the cmux socket
+# is unreachable from any container regardless of cmux's access mode (allowAll
+# does not help). The server runs on the host as a launchd LaunchAgent instead
+# (`pnpm server:up`). Full investigation (OrbStack/Docker Desktop share the
+# limitation; Lima reverse socket forwarding is fragile under Rancher Desktop):
+# docs/superpowers/specs/2026-08-11-server-launchd-design.md
 # nginx proxies /ws and /health to that host server via host.docker.internal.
 services:
   client:

@@ -30,11 +30,13 @@ cd apps/client && pnpm vitest run src/lib/__tests__/cmux-rpc.test.ts  # クラ�
 ```bash
 pnpm bootstrap       # 初回のみ: install + build + cmux allowAll 設定 + docker compose build
 pnpm start / stop    # サーバーをホスト常駐起動 + クライアント(nginx)を Docker 起動 / 両方停止
-pnpm server:up|down|status|restart|logs   # ホスト常駐サーバーの管理（ログ: apps/server/.run/server.log）
+pnpm server:up|down|status|restart|logs   # launchd LaunchAgent 常駐の管理（ログ: apps/server/.run/server.log）
 ```
 
 クライアントを更新した後の `pnpm start` はイメージを自動再ビルドする（以前は `pnpm bootstrap` が必要だった）。
 デプロイは canonical checkout から行う。worktree には証明書がなく、compose project 名も異なる。
+
+サーバーは LaunchAgent（`KeepAlive` + `RunAtLoad`）で常駐し、クラッシュ時は自動再起動、ログイン時は自動復帰する。`pnpm stop` / `pnpm server:down` は plist 削除まで行う完全解除で、Mac を再起動しても止まったまま。Mac 再起動後にスタック全体を自動復帰させるには Rancher Desktop のログイン時自動起動設定が別途必要（クライアント側の復帰は `restart: unless-stopped` が担う）。
 
 ## アーキテクチャ
 
@@ -46,7 +48,7 @@ TLS は nginx で終端する。証明書は mkcert 製（`pnpm certs:setup` →
 
 ### 重要な制約: サーバーは Docker に入れられない
 
-cmux ソケットは既定の `cmuxOnly` モードで「cmux の子孫プロセスのみ接続可」という PID 系譜チェックを行うため、コンテナ（別プロセスツリー）からの接続は常に拒否される。そのためサーバーはホストで動かし、Docker は nginx クライアントのみ（`compose.yml` 参照）。常駐デーモン運用には cmux を `allowAll` にする必要があり（`pnpm cmux:allow-automation`）、設定は cmux の再起動か Settings → Automation での切替で初めて反映される。開発時（`pnpm dev`）はサーバーが cmux 端末の子プロセスなので `cmuxOnly` のままで動く。
+Rancher Desktop（Lima VM / virtiofs）は bind mount したホストの UNIX ソケットをファイルノードとしては見せるが、VM 境界を越えた connect() を中継しない（`Not supported`）。そのため cmux ソケットにはコンテナからどの設定でも到達できず（`allowAll` でも不可）、サーバーはホストで動かし、Docker は nginx クライアントのみ（`compose.yml` 参照）。調査記録は `docs/superpowers/specs/2026-08-11-server-launchd-design.md`。なお cmux 既定の `cmuxOnly` モードは「cmux の子孫プロセスのみ接続可」という PID 系譜チェックも行う。常駐デーモン運用には cmux を `allowAll` にする必要があり（`pnpm cmux:allow-automation`）、設定は cmux の再起動か Settings → Automation での切替で初めて反映される。開発時（`pnpm dev`）はサーバーが cmux 端末の子プロセスなので `cmuxOnly` のままで動く。
 
 ### サーバー (`apps/server/src/`)
 
