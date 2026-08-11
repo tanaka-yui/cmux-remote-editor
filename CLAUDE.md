@@ -36,7 +36,7 @@ pnpm server:up|down|status|restart|logs   # launchd LaunchAgent 常駐の管理�
 クライアントを更新した後の `pnpm start` はイメージを自動再ビルドする（以前は `pnpm bootstrap` が必要だった）。
 デプロイは canonical checkout から行う。worktree には証明書がなく、compose project 名も異なる。
 
-サーバーは LaunchAgent（`KeepAlive` + `RunAtLoad`）で常駐し、クラッシュ時は自動再起動、ログイン時は自動復帰する。`pnpm stop` / `pnpm server:down` は plist 削除まで行う完全解除で、Mac を再起動しても止まったまま。Mac 再起動後にスタック全体を自動復帰させるには Rancher Desktop のログイン時自動起動設定が別途必要（クライアント側の復帰は `restart: unless-stopped` が担う）。
+サーバーは LaunchAgent（`KeepAlive` + `RunAtLoad`）で常駐し、クラッシュ時は自動再起動、ログイン時は自動復帰する。`pnpm stop` / `pnpm server:down` は plist 削除まで行う完全解除で、Mac を再起動しても止まったまま。Mac 再起動後にスタック全体を自動復帰させるには Rancher Desktop のログイン時自動起動設定が別途必要（クライアント側の復帰は `restart: unless-stopped` が担う）。なお launchd 起動の bun が `~/Documents` 配下の WorkingDirectory を解決するには bun への Full Disk Access 付与が必要（システム設定 → プライバシーとセキュリティ。無いと起動が無言でハングする）。Homebrew で bun を更新すると Cellar パスが変わり許可が外れるため、更新後は再付与すること。
 
 ## アーキテクチャ
 
