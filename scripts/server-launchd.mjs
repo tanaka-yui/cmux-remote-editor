@@ -93,10 +93,13 @@ function up() {
     console.error(`launchctl bootstrap failed:\n${boot.out}`)
     process.exit(1)
   }
-  const deadline = Date.now() + 5000
+  const deadline = Date.now() + 15000
   while (!portListenerPids().length) {
     if (Date.now() > deadline) {
-      console.error(`bootstrapped but not listening on :${PORT} — check logs: pnpm server:logs`)
+      run('launchctl', ['bootout', `${DOMAIN}/${LABEL}`])
+      if (existsSync(PLIST_PATH)) rmSync(PLIST_PATH)
+      console.error(`bootstrapped but not listening on :${PORT} — LaunchAgent unregistered to avoid a crash loop`)
+      console.error('check logs (pnpm server:logs), then retry: pnpm server:up')
       process.exit(1)
     }
     run('sleep', ['0.2'])
