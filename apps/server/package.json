@@ -11,11 +11,11 @@
     "lint": "biome lint ./src",
     "lint:fix": "biome lint --write ./src",
     "logs": "tail -f .run/server.log",
-    "restart": "bun run stop; sleep 1; bun run start:bg",
+    "restart": "node ../../scripts/server-launchd.mjs up",
     "start": "bun run src/index.ts",
-    "start:bg": "mkdir -p .run && CMUX_REMOTE_TLS=1 nohup bun src/index.ts >> .run/server.log 2>&1 & echo \"server up on :${PORT:-48701} (TLS) — logs: apps/server/.run/server.log\"",
-    "status": "lsof -ti tcp:${PORT:-48701} -sTCP:LISTEN >/dev/null 2>&1 && echo \"running on :${PORT:-48701}\" || echo stopped",
-    "stop": "PIDS=$(lsof -ti tcp:${PORT:-48701} -sTCP:LISTEN 2>/dev/null); if [ -n \"$PIDS\" ]; then kill $PIDS && echo 'server down'; else echo 'not running'; fi",
+    "start:bg": "node ../../scripts/server-launchd.mjs up",
+    "status": "node ../../scripts/server-launchd.mjs status",
+    "stop": "node ../../scripts/server-launchd.mjs down",
     "test": "bun test"
   },
   "dependencies": {
