@@ -62,6 +62,7 @@ function buildPlist(bunPath) {
   <key>EnvironmentVariables</key>
   <dict>
     <key>CMUX_REMOTE_TLS</key><string>1</string>
+    <key>PORT</key><string>${PORT}</string>
   </dict>
   <key>KeepAlive</key><true/>
   <key>RunAtLoad</key><true/>
