@@ -1,4 +1,4 @@
-# cmux-remote-editor
+# cmux-remote-terminal
 
 [cmux](https://cmux.dev) のリモートターミナルビューア — iPhone などのブラウザ／PWA から、ローカルで動く cmux のワークスペースを閲覧・操作できます。
 
