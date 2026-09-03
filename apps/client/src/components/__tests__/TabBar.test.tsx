@@ -200,11 +200,24 @@ describe('TabBar', () => {
     })
 
     expect(tablist.querySelectorAll('[tabindex="0"]')).toHaveLength(1)
-    expect(tablist.querySelector('button')).toBeNull()
+    expect(tablist.querySelectorAll('button[tabindex="-1"]')).toHaveLength(surfaces.length)
     expect(activeTab.getAttribute('aria-keyshortcuts')).toBe('Delete Backspace')
-    expect(activeTab.getAttribute('aria-description')).toBe('タブを閉じる')
     fireEvent.keyDown(activeTab, { key: 'Delete' })
     expect(onClose).toHaveBeenCalledWith('surface:1')
+  })
+
+  it('タッチ用の閉じるボタンを読み上げ可能にしつつTab停止点にはしない', () => {
+    render(<TabBar {...base} />)
+    const activeTab = screen.getByRole('tab', {
+      name: 'influencer-platform / zsh、ライブ購読中',
+      description: 'DeleteまたはBackspaceキーでタブを閉じる',
+    })
+    const closeButtons = screen.getAllByRole('button', { name: 'タブを閉じる' })
+
+    expect(closeButtons).toHaveLength(surfaces.length)
+    expect(closeButtons.every((button) => button.tabIndex === -1)).toBe(true)
+    expect(activeTab.hasAttribute('aria-description')).toBe(false)
+    expect(activeTab.getAttribute('aria-describedby')).toBeTruthy()
   })
 
   it('左右矢印でロービングフォーカスを移動する', () => {
@@ -223,6 +236,43 @@ describe('TabBar', () => {
     expect(onSelect).not.toHaveBeenCalled()
   })
 
+  it('前面でないロービング対象を閉じると次のタブへフォーカスを移し停止点を1つ保つ', () => {
+    const onClose = vi.fn()
+    const { rerender } = render(<TabBar {...base} onClose={onClose} />)
+    const first = screen.getByRole('tab', { name: 'influencer-platform / zsh、ライブ購読中' })
+    const second = screen.getByRole('tab', { name: 'freelance-jp-app / zsh、未購読' })
+    const third = screen.getByRole('tab', { name: 'freelance-jp-app / docs、browser、購読対象外' })
+
+    first.focus()
+    fireEvent.keyDown(first, { key: 'ArrowRight' })
+    expect(document.activeElement).toBe(second)
+
+    fireEvent.keyDown(second, { key: 'Delete' })
+    expect(onClose).toHaveBeenCalledWith('surface:2')
+    expect(document.activeElement).toBe(third)
+
+    const remainingSurfaces = surfaces.filter((surface) => surface.ref !== 'surface:2')
+    rerender(<TabBar {...base} surfaces={remainingSurfaces} onClose={onClose} />)
+    const tablist = screen.getByRole('tablist')
+    expect(tablist.querySelectorAll('[role="tab"][tabindex="0"]')).toHaveLength(1)
+    expect(third.tabIndex).toBe(0)
+    expect(document.activeElement).toBe(third)
+  })
+
+  it('外部更新でロービング対象が消えても前面タブをTab停止点に戻す', () => {
+    const { rerender } = render(<TabBar {...base} />)
+    const first = screen.getByRole('tab', { name: 'influencer-platform / zsh、ライブ購読中' })
+    const second = screen.getByRole('tab', { name: 'freelance-jp-app / zsh、未購読' })
+
+    fireEvent.keyDown(first, { key: 'ArrowRight' })
+    expect(second.tabIndex).toBe(0)
+
+    rerender(<TabBar {...base} surfaces={surfaces.filter((surface) => surface.ref !== 'surface:2')} />)
+    const tablist = screen.getByRole('tablist')
+    expect(tablist.querySelectorAll('[role="tab"][tabindex="0"]')).toHaveLength(1)
+    expect(first.tabIndex).toBe(0)
+  })
+
   it('Space はスクロールせずタブを選択する', () => {
     const onSelect = vi.fn()
     render(<TabBar {...base} onSelect={onSelect} />)
@@ -236,9 +286,11 @@ describe('TabBar', () => {
     const onSelect = vi.fn()
     const onClose = vi.fn()
     render(<TabBar {...base} onSelect={onSelect} onClose={onClose} />)
-    const close = screen.getAllByTestId('close-tab-hit')[0] as HTMLElement
+    const closePath = screen.getAllByTestId('close-tab-hit')[0]?.querySelector('path')
 
-    fireEvent.click(close)
+    expect(closePath).toBeTruthy()
+    if (!closePath) return
+    fireEvent.click(closePath)
     expect(onClose).toHaveBeenCalledOnce()
     expect(onSelect).not.toHaveBeenCalled()
   })

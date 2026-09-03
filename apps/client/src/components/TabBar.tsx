@@ -38,6 +38,9 @@ export function TabBar({
 }: TabBarProps) {
   const activeRef = useRef<HTMLDivElement | null>(null)
   const [rovingRef, setRovingRef] = useState<string | null>(() => foreground ?? surfaces[0]?.ref ?? null)
+  const effectiveRovingRef = surfaces.some((surface) => surface.ref === rovingRef)
+    ? rovingRef
+    : (surfaces.find((surface) => surface.ref === foreground)?.ref ?? surfaces[0]?.ref ?? null)
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: 前面 ref の変化を 1 箇所で拾ってスクロールする。
   useEffect(() => {
@@ -60,6 +63,18 @@ export function TabBar({
     if (!nextRef) return
     setRovingRef(nextRef)
     next.focus()
+  }
+
+  const close = (surface: Surface, tab: HTMLDivElement) => {
+    const tabs = Array.from(tab.parentElement?.querySelectorAll<HTMLDivElement>('[role="tab"]') ?? [])
+    const currentIndex = tabs.indexOf(tab)
+    const next = currentIndex < 0 ? undefined : (tabs[currentIndex + 1] ?? tabs[currentIndex - 1])
+    const nextRef = next?.dataset.ref
+    if (next && nextRef) {
+      setRovingRef(nextRef)
+      next.focus()
+    }
+    onClose(surface.ref)
   }
 
   return (
@@ -96,13 +111,13 @@ export function TabBar({
               aria-label={tabLabel(surface, subscribed, hasActivity)}
               aria-selected={active}
               aria-keyshortcuts="Delete Backspace"
-              aria-description="タブを閉じる"
+              aria-describedby={`tab-close-description-${surface.ref}`}
               data-ref={surface.ref}
-              tabIndex={surface.ref === rovingRef ? 0 : -1}
+              tabIndex={surface.ref === effectiveRovingRef ? 0 : -1}
               onClick={(event) => {
                 const target = event.target
                 if (target instanceof Element && target.closest('[data-close-tab-hit]')) {
-                  onClose(surface.ref)
+                  close(surface, event.currentTarget)
                   return
                 }
                 select(surface)
@@ -110,7 +125,7 @@ export function TabBar({
               onKeyDown={(event) => {
                 if (event.key === 'Delete' || event.key === 'Backspace') {
                   event.preventDefault()
-                  onClose(surface.ref)
+                  close(surface, event.currentTarget)
                   return
                 }
                 if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
@@ -181,18 +196,40 @@ export function TabBar({
                 />
               ) : null}
               <span
-                aria-hidden="true"
+                id={`tab-close-description-${surface.ref}`}
+                style={{
+                  position: 'absolute',
+                  width: 1,
+                  height: 1,
+                  padding: 0,
+                  margin: -1,
+                  overflow: 'hidden',
+                  clip: 'rect(0 0 0 0)',
+                  whiteSpace: 'nowrap',
+                  border: 0,
+                }}
+              >
+                DeleteまたはBackspaceキーでタブを閉じる
+              </span>
+              <button
+                type="button"
+                tabIndex={-1}
+                aria-label="タブを閉じる"
                 data-close-tab-hit="true"
                 data-testid="close-tab-hit"
+                onKeyDown={(event) => event.stopPropagation()}
                 style={{
+                  background: 'none',
+                  border: 'none',
                   color: 'var(--color-text-subtle)',
                   padding: '0 2px',
+                  cursor: 'pointer',
                   display: 'flex',
                   alignItems: 'center',
                 }}
               >
                 <X size={14} />
-              </span>
+              </button>
             </div>
           )
         })}

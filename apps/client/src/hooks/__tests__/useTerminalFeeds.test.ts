@@ -350,6 +350,7 @@ describe('useTerminalFeeds — 実行規律', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0)
     })
+    expect(readGrid).toHaveBeenCalledTimes(1)
 
     rerender({
       ...h.props,
@@ -726,13 +727,15 @@ describe('useTerminalFeeds — stale 検出と永続化', () => {
 
   it('poll plan から外れた ref の重複排除値を破棄する', async () => {
     const setItem = vi.spyOn(localStorage, 'setItem')
-    const h = harness({ subscribed: ['surface:1'], visible: ['surface:1'], pinned: false })
+    const h = harness({ subscribed: ['surface:1'], visible: ['surface:1'], pinned: true })
     const { rerender } = renderHook((props: Parameters<typeof useTerminalFeeds>[0]) => useTerminalFeeds(props), {
       initialProps: h.props,
     })
     await act(async () => {
       await vi.advanceTimersByTimeAsync(10)
     })
+    expect(h.readText).toHaveBeenCalledTimes(1)
+    setItem.mockClear()
 
     rerender({
       ...h.props,
@@ -746,5 +749,6 @@ describe('useTerminalFeeds — stale 検出と永続化', () => {
 
     const writes = setItem.mock.calls.filter((call) => call[0] === 'cmux-surface-cache:surface:1')
     expect(writes).toHaveLength(2)
+    expect(writes[1]?.[1]).toContain('"scrollback":"history text"')
   })
 })
