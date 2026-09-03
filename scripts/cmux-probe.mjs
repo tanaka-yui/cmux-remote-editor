@@ -334,10 +334,13 @@ async function runWriteProbe(rpc) {
   }
 
   const scratchIds = new Set()
+  let writeAborted = false
+  let hasTrustedScratch = false
   const resolveCreatedSurface = async (response) => {
     const surfaceId = typeof response.result?.surface_id === 'string' ? response.result.surface_id : null
     const surfaceRef = typeof response.result?.surface_ref === 'string' ? response.result.surface_ref : null
     if (!isSuccess(response) || (!surfaceId && !surfaceRef)) {
+      writeAborted = true
       console.log('    aborted: surface.create response has no trusted surface_id or surface_ref; no further writes will run')
       return null
     }
@@ -348,6 +351,7 @@ async function runWriteProbe(rpc) {
       (surface) => (!surfaceId || surface.id === surfaceId) && (!surfaceRef || surface.ref === surfaceRef),
     )
     if (matches.length !== 1) {
+      writeAborted = true
       console.log(
         `    aborted: response identity surface_id=${surfaceId ?? '-'} surface_ref=${surfaceRef ?? '-'} matched ${matches.length} surfaces; no further writes will run`,
       )
@@ -358,7 +362,10 @@ async function runWriteProbe(rpc) {
   const createScratch = async (label, params, expectedWorkspaceId, focus = false) => {
     const response = await rpc('surface.create', { type: 'terminal', focus, ...params })
     const created = await resolveCreatedSurface(response)
-    if (created) scratchIds.add(created.id)
+    if (created) {
+      scratchIds.add(created.id)
+      hasTrustedScratch = true
+    }
     const responseWorkspaceId = response.result?.workspace_id
     console.log(`  ${label}: ${summarize(response)}`)
     console.log(
@@ -403,6 +410,10 @@ async function runWriteProbe(rpc) {
     const afterFocus = getWindow(await rpc('system.tree', {}))
     console.log(`    selection changed to target=${afterFocus.workspaces?.some((workspace) => workspace.selected && workspace.id === targetWorkspace.id)}`)
   } finally {
+    if (writeAborted || !hasTrustedScratch) {
+      console.log('  cleanup skipped: unresolved create response aborted the write probe; no surface.close or workspace.select was sent')
+      return
+    }
     for (const surfaceId of scratchIds) {
       const closed = await rpc('surface.close', { surface_id: surfaceId })
       console.log(`  cleanup surface.close ${surfaceId}: ${summarize(closed)}`)
