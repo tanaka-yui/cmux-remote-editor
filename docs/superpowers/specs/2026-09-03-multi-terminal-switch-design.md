@@ -2,7 +2,8 @@
 
 - 日付: 2026-09-03
 - 対象: `apps/client`（主）/ `apps/server`（小）
-- 状態: レビュー中（point=spec / round 3）
+- 状態: **レビュー 5 ラウンド完了（上限）。round 5 の指摘を反映済みだが、その反映自体は未レビュー**
+  （詳細は §10 の「レビューの到達点」）
 
 ## 1. 背景と要望
 
@@ -179,11 +180,15 @@ round 1 の spec は「新規端末の作成だけは例外」としていたが
 
 1. `workspace.create {}` を呼ぶ
 2. **サーフェス一覧とワークスペース一覧を再取得する**（D2.1 の T3）
-3. 再取得した一覧から、レスポンスの `surface_ref` に一致する `SurfaceLike` を引いて
-   `focus(state, surface, ...)` する
+3. **その refresh が適用されたことを await してから**、一覧の中でレスポンスの `surface_ref` に
+   一致する `SurfaceLike` を引いて **`selectSurface(surface)`** する
+   （`focus` を直接呼ばない。D3.1 の合成 reducer を通す）
 
 **step 2 は D2.1 の共通 refresh 経路を 1 回呼ぶだけである。** 直接 RPC を投げたうえでさらに
 T3 を通知する、という二重取得はしない（§6 に所有者を書き、hook テストで refresh 要求数を固定する）。
+**step 3 が待つのは「この T3 を包含する refresh の適用」である**（D2.1 の `generation` 契約）。
+既存の T5 が in-flight のときにその完了で進むと、作成前のスナップショットを見て
+「ref 不在」と誤判定するためである。
 
 **2 を 1 の直後に置くのは `focus` の入力を作るためである。** `focus` は type 判定のため
 `SurfaceLike` 全体を要求する（D2）が、`workspace.create` のレスポンスに `type` は含まれない
@@ -233,7 +238,7 @@ export interface ViewState {
 | I2 | `foreground` が **terminal** のときに限り、それは必ず `subscriptions` に含まれる |
 | I3 | `subscriptions` に含まれるのは**生存する terminal だけ**（browser は入らない） |
 | I4 | `subscriptions` の ref に重複はない |
-| I5 | `subscriptions.length <= cap`。**`cap` を受けるのは `focus` だけ**で、`reconcile` / `initialize` / `pollPlan` は購読を増やさないため、`focus` が確立した上限をそのまま保存する（I5 は「直近の `focus` に渡した `cap`」に対する事後条件である）。production では常に `MAX_LIVE_SUBSCRIPTIONS` |
+| I5 | `subscriptions.length <= cap`。**`cap` を受けるのは `focus` だけ**だが、他の遷移も上限を保存する: `reconcile` は削除後に既存購読があればそこから退避し、空のときだけ terminal を 1 件足す。`initialize` も最大 1 件しか作らない。`pollPlan` は集合を変えない。`cap >= 1` なのでどちらも上限内に収まる（I5 は「直近の `focus` に渡した `cap`」に対する事後条件である）。production では常に `MAX_LIVE_SUBSCRIPTIONS` |
 | I6 | `foregroundWorkspaceRef` は `foreground` が指すサーフェスのワークスペースと一致する。`foreground === null` なら `null` |
 
 旧版の「`foreground` は必ず `subscriptions` に含まれる」と「browser は `subscriptions` に
@@ -302,6 +307,13 @@ E4 の「復帰時は前面のみ即時再取得」は feed の規則であり�
    何回発火しても、立つのは 1 件だけである
 2. **dirty は各取得の「開始前」に消費する**（下ろしてから RPC を投げる）
 3. その取得の最中にまた T1〜T4 が来れば dirty が再び立ち、完了後にもう 1 件走る
+
+**呼び出し元へ返す Promise は「その要求を包含する refresh が state に適用された後」に resolve する。**
+共通 refresh は適用のたびに単調増加する `generation` を持ち、`requestTopologyRefresh()` は
+**自分の要求を含んだ generation が適用された時点**で resolve する（`Promise<number>` で
+その generation を返す）。現在 in-flight の取得は自分の要求より前に始まっているので、
+その完了で resolve してはならない — D1.1 step 3 が作成前のスナップショットを見て
+「ref 不在」と誤判定し、新しいワークスペースを前面化しなくなる。
 
 3 が要るのは、dirty を完了後に下ろすと **follow-up の実行中に来た新しい T3 を落とす**ためである。
 2 の順序なら連続 mutation の間は refresh が直列に続き得るが、それが正しい
@@ -381,42 +393,93 @@ RPC は**開始時点の epoch を捕まえて**発行する。応答の適用�
 `source` が `'memory'` に変わるのは F5（取得成功）のときだけである。
 
 **F5n で描画中のフレームを捨てるのは、停止した端末に古い画面を出したまま「ライブ」と称しないため**である。
-`localStorage` のスナップショットは消さない（C2 は変化時にしか書かない）。オフラインになれば
-`source = 'cache'` として再び使われる。オンラインで成功応答が `null` を返している間は表示しないだけである。
+**`grid` と `history` の両方を捨てる**（`history` だけ残すと古い scrollback が再表示される）。
 
-#### 原子性は `selectSurface` という 1 本の入口で担保する
+`localStorage` のスナップショットは消さない（C2 は変化時にしか書かない）が、
+**同一セッションのうちは再利用しない。** F5n を経た feed は `source === 'none'` になり、
+追い出し（F10）→ 再昇格でも切断（F8）→ 再接続（F9）でも **F3 に入る**。
+「この端末は停止している」と一度分かった後にキャッシュの古い画面を復活させる方が誤解を招くためである。
+スナップショットが使われるのは**次にページを読み込んだとき**（feed の `Map` が空なので F2 に入る）だけである。
+これは F2 の条件「`feed.source === 'cache'`、または **feed が無く** cache がある」がそのまま表している。
+
+#### 原子性は「1 つの合成状態を 1 つの reducer で動かす」ことで担保する
 
 F1〜F3 は**前面の初回描画より前に**適用しなければならない。そうしないと、保持していた feed の
 旧 `live` / `cache` 状態が 1 コミットだけ見えて「前の端末の画面が一瞬残る」ことが起きる。
 
-これを React の batching の解釈に委ねない。`ViewState` は `useCmux`、feed の `Map` は
-`useTerminalFeeds` と**所有者が別**なので、`useTerminalFeeds` が `subscriptions` の変化を
-`useEffect` で観測して昇格する実装にすると、**必ず 2 コミットに割れる**。
+これを React の batching の解釈に委ねない。**2 つの setter を別々に呼ぶ形も採らない。**
+`setFeeds` の updater は**変更前の `ViewState` を見られない**ので、
+「この terminal は本当に購読外から購読内へ変わったのか、もともと購読中だったのか」を
+判定できない。feed は購読解除後も D3.2 で保持されるため、feed の有無からも区別できない。
+無条件に昇格させると、**すでに `live` の背面を前面化しただけで `epoch++` して `warming` に戻り、
+F4 を必ず破る**。browser を選んだときに何もしない、という条件も表現できない。
 
-そこで**前面を変える唯一の公開経路を `selectSurface(surface: SurfaceLike)` に一本化する**。
-タブタップ・ドロワー・初期復元・退避・新規作成・通知ジャンプの 6 経路はすべてこれを呼ぶ。
-`selectSurface` は**同一の同期処理の中で**次の 2 つを発行する。
-
-1. `setViewState(prev => focus(prev, surface, now, MAX_LIVE_SUBSCRIPTIONS))`
-2. `setFeeds(prev => promote(prev, surface, now, readCachedSnapshot))`
-
-`promote` は F1〜F3 だけを行う**純粋関数**として `lib/view-state.ts` に置く
-（`useTerminalFeeds` の中の effect には置かない）。
+そこで**`ViewState` と feed の `Map` を 1 つの合成状態にまとめ、1 つの reducer で動かす**。
 
 ```ts
-// F1〜F3。昇格対象の feed を作る/更新する。epoch を進め、source を決める。
-// キャッシュの復元もこの関数の中で行う（F2 を別コミットに分けない）。
-export function promote(
+export interface SwitcherState {
+  view: ViewState
+  feeds: Map<string, TerminalFeed>
+}
+
+export type SwitcherAction =
+  | { type: 'select';     surface: SurfaceLike; now: number; cap: number }
+  | { type: 'initialize'; surfaces: readonly SurfaceLike[]; preferredRef: string | null; now: number }
+  | { type: 'reconcile';  surfaces: readonly SurfaceLike[]; now: number }
+
+// readCache を注入して純粋な reducer を作る（テストは fake を渡す）。
+export function createSwitcherReducer(
+  readCache: (ref: string) => CachedSnapshot | null,
+): (state: SwitcherState, action: SwitcherAction) => SwitcherState
+```
+
+**reducer の規則はこの 1 行に集約される。**
+
+> **F1〜F3 を適用するのは、その action で `subscriptions` に「新しく加わった」ref だけである。**
+
+各 action は次の順で処理する。
+
+1. `focus` / `initialize` / `reconcile`（これまでどおりの純粋関数）で `nextView` を作る
+2. `added = nextView.subscriptions の ref 集合 − prevView.subscriptions の ref 集合` を取る
+3. `added` の各 ref に F1〜F3 を適用する。`added` に含まれるのは I3 より必ず terminal である
+4. `added` が空なら feed は 1 バイトも変わらない
+5. D3.2 の `MAX_RETAINED_FEEDS` の LRU 退避を最後に適用する（購読中は退避対象外）
+
+この規則だけで、round 4 まで個別に書いていた条件がすべて自動的に満たされる。
+
+| 状況 | `added` | 結果 |
+|---|---|---|
+| すでに購読中の背面 terminal を前面化 | 空 | feed 不変 = **F4** |
+| browser を前面化 | 空（browser は I3 より購読集合に入らない） | feed 不変 = **D5** |
+| 非購読 terminal を前面化 | 1 件 | F1〜F3 |
+| `initialize` が最初の terminal を購読へ入れる | 1 件 | F1〜F3（feed が無いので実際には F2 か F3） |
+| `reconcile` が空の購読集合へ退避先 terminal を足す | 1 件 | F1〜F3 |
+| `reconcile` が購読だけ削る | 空 | feed 不変（F10 は据え置き） |
+
+**`focus` / `initialize` / `reconcile` / `promote` は `lib/view-state.ts` の内部関数のままにし、
+hook からは公開しない。** 公開するのは `dispatch` と、それを包んだ
+`selectSurface(surface)` / `initializeFrom(surfaces, preferredRef)` / `reconcileWith(surfaces)` の 3 つだけである。
+タブタップ・ドロワー・初期復元・退避・新規作成・通知ジャンプの 6 経路はすべてこの 3 つのいずれかを呼び、
+**`focus` を直接呼ぶ経路は作らない**（D1.1 step 3 も `selectSurface` を呼ぶ）。
+
+```ts
+// F1〜F3 のみ。reducer の内部から added の各 ref に対して呼ばれる。
+function promote(
   feeds: ReadonlyMap<string, TerminalFeed>,
-  surface: SurfaceLike,
+  ref: string,
   now: number,
   readCache: (ref: string) => CachedSnapshot | null,
 ): Map<string, TerminalFeed>
 ```
 
-**受入条件**: `retained memory` / `cache` / `none` の 3 入力それぞれで、
-**foreground が変わった最初のコミットが `warming/memory` / `warming/cache` / `loading/none` であり、
-その前に中間コミットが無いこと**。これは `useCmux` と `useTerminalFeeds` をまたぐ結合テストで固定する。
+**受入条件**（§8 の結合テスト）:
+
+1. `retained memory` / `cache` / `none` の 3 入力それぞれで、**foreground が変わった最初のコミットが
+   `warming/memory` / `warming/cache` / `loading/none` であり、その前に中間コミットが無いこと**
+2. **すでに `live/memory` の購読中 terminal を前面化しても `feeds` と `epoch` が不変であること**（F4）
+3. **browser を前面化しても `feeds` が不変であること**（D5）
+4. **`initialize` が作る最初の terminal** に F2/F3 が適用されること
+5. **`subscriptions` が空の状態からの `reconcile` の退避先 terminal** に F1〜F3 が適用されること
 
 ### D3.2 メモリ上のフィードは購読より長く保持する
 
@@ -526,9 +589,10 @@ browser または `null` なら空にする。**起動直後に先頭から 8 �
 
 **`cap` の事前条件は `1 <= cap <= MAX_LIVE_SUBSCRIPTIONS`** とし、I5 は `cap` を上限として
 検査する（`focus` が任意の `cap` を受けるのに I5 が定数を見ていると、両者がずれる）。
-`cap` を引数で受けるのは **`focus` だけ**である。`reconcile` は購読を削るか、空集合へ terminal を
-1 件足すかしかせず、`initialize` は 1 件だけ作り、`pollPlan` は集合を変えない。つまり
-`cap >= 1` である限りこの 3 つは `focus` が確立した上限を保存するので、`cap` を渡す必要が無い
+`cap` を引数で受けるのは **`focus` だけ**である。他の 3 つも上限を保存する: `reconcile` は
+削除後に既存購読が残っていればそこから退避先を選び、**購読集合が空になったときだけ** terminal を
+1 件足す。`initialize` も最大 1 件しか作らない。`pollPlan` は集合を変えない。
+つまり `cap >= 1` である限り、どちらの追加も上限内に収まるので `cap` を渡す必要が無い
 （`ViewState` に持たせるのも、状態を 1 つ増やすだけで得が無いのでやめる）。
 production の呼び出しは常に `MAX_LIVE_SUBSCRIPTIONS` を渡す。`cap` を引数にしているのは
 テストで小さい値を使って追い出しを検証するためである。
@@ -762,17 +826,19 @@ browser サーフェスは「未購読」ではなく **「browser、購読対�
 ### 新規モジュール
 
 **`apps/client/src/lib/view-state.ts`（純粋）** — D2 の `ViewState` と 4 つの遷移関数、
-D3.1 の `promote`（F1〜F3）、および不変条件 I1〜I6 を満たすことの責任を持つ。UI も RPC も知らない。
-`promote` をここに置くのは、**昇格を `useTerminalFeeds` の effect でなく `selectSurface` の
-同期処理から呼ぶ**ためである（D3.1 の原子性）。
+D3.1 の `promote`（F1〜F3）と **`createSwitcherReducer`（`SwitcherState` = `{ view, feeds }` の合成遷移）**、
+および不変条件 I1〜I6 を満たすことの責任を持つ。UI も RPC も知らない。
+`focus` / `initialize` / `reconcile` / `promote` は**この中の内部関数**で、外へは公開しない。
+合成 reducer にまとめるのは、**「購読集合に新しく加わった ref」を変更前後の `ViewState` から
+求めないと F1〜F3 の適用対象が決まらない**ためである（D3.1 の原子性）。
 
-**前面を変える唯一の公開経路は `selectSurface(surface: SurfaceLike)`** である（D3.1）。
-`ViewState` を持つ `useCmux` と feed の `Map` を持つ `useTerminalFeeds` にまたがるため、
-**両方の setter を同一の同期処理から呼ぶ薄い合成層**（`useCmux` が `useTerminalFeeds` の
-`promoteFeed` setter を受け取る形）に置く。タブ・ドロワー・初期復元・退避・新規作成・
-通知ジャンプの 6 経路はすべてこれを呼び、`focus` と `promote` を直接呼ぶ経路は作らない。
+**`SwitcherState` の所有者は `useCmux` 1 つ**である（`useReducer(createSwitcherReducer(readCache))`）。
+`view` と `feeds` を別々の hook が持つ形はやめる — 別々の setter では「本当に購読が増えたか」を
+feed 側で判定できず、F4 と browser を表現できないためである（D3.1）。
+公開するのは **`selectSurface` / `initializeFrom` / `reconcileWith` の 3 つだけ**で、
+タブ・ドロワー・初期復元・退避・新規作成・通知ジャンプの 6 経路はすべてこのいずれかを呼ぶ。
 
-**`apps/client/src/hooks/useTerminalFeeds.ts`** — `Map<surfaceRef, TerminalFeed>` を持ち、
+**`apps/client/src/hooks/useTerminalFeeds.ts`** — `useCmux` が持つ `feeds` に対して
 `pollPlan` に従って E1〜E5 の規律でサーフェスごとの取得を回す。
 `App.tsx:195-275` の単一 effect を置き換える。既存の要件をすべて引き継ぐ:
 
@@ -798,7 +864,7 @@ export interface TerminalFeed {
 
 | ファイル | 変更 |
 |---|---|
-| `hooks/useCmux.ts` | `selectWorkspace` を公開 API から削除し `currentWorkspace` を `foregroundWorkspaceRef` からの導出値にする（D1/D2）。`listSurfaces()` を全ワークスペース取得に。`createSurface` は `workspace_id` 指定 + レスポンスから新 ref を取得（P7/P9）し、返り値の `workspace_id` を検証（P8）。**`createWorkspace` を D1.1 の 3 手順（create → 両一覧の再取得 → 一覧から引いた `SurfaceLike` で `focus`）に置き換える**。**D2.1 の topology 再取得ループ（T1〜T5 と dirty フラグの 1 回合流）**を持つ。`ViewState` の保持と `focus` の公開 |
+| `hooks/useCmux.ts` | `selectWorkspace` を公開 API から削除し `currentWorkspace` を `foregroundWorkspaceRef` からの導出値にする（D1/D2）。`listSurfaces()` を全ワークスペース取得に。`createSurface` は `workspace_id` 指定 + レスポンスから新 ref を取得（P7/P9）し、返り値の `workspace_id` を検証（P8）。**`createWorkspace` を D1.1 の 3 手順（create → 共通 refresh を 1 回 → その適用を await して `selectSurface`）に置き換える**。**D2.1 の topology 再取得ループ**（T1〜T5、queued refresh 1 件、dirty は取得開始前に消費、`generation` を返す `requestTopologyRefresh()`）を持つ。**`SwitcherState` を `useReducer` で保持し、`selectSurface` / `initializeFrom` / `reconcileWith` だけを公開する**（`focus` は公開しない） |
 | `App.tsx` | 単数スカラー（`termGrid`/`termHistory`/`lastUpdated`）を `useTerminalFeeds` に委譲。前面フィードだけを `Terminal` に渡す。browser 分岐は現行維持（D5）。D3.1 の 5 表示ケースを `(status, source)` から選ぶ |
 | `components/TabBar.tsx` | 全サーフェスを描画。WS 色ドット、購読ドット、WS 境界の区切り線。`×` の意味は据え置き |
 | `components/Drawer.tsx` | ワークスペース行を展開可能にし、配下にサーフェス行を出す。購読ドットを揃える |
@@ -842,7 +908,8 @@ export interface TerminalFeed {
   `foregroundWorkspaceRef` から正しく計算されることを固定する。
   **`initialize` が作る購読集合が「terminal の前面 1 件」または空であること**（D6）、
   **`cap` を小さくして `focus` した後、`reconcile` / `initialize` / `pollPlan` がその上限を保存すること**
-  （I5 は「直近の `focus` に渡した `cap`」に対する事後条件である）も検証する。
+  — とくに **`reconcile` が購読集合を空にしてから terminal を 1 件足す経路**と
+  **`initialize` の 1 件**で上限を超えないこと（I5 は「直近の `focus` に渡した `cap`」に対する事後条件）。
   `promote`（F1〜F3）の分岐を `source` ごとに固定する
 - `hooks/__tests__/useTerminalFeeds.test.ts` — サーフェスごとに正しい `surface_id` で `terminal.replay` が飛ぶこと、
   切替時に in-flight が新前面を上書きしないこと、背面では scrollback を取らないこと、
@@ -865,12 +932,21 @@ export interface TerminalFeed {
   **F10 が `status` と `source` を変えないこと**、**各昇格で `promotedAt` も更新されること**、
   **`F2 -> F10 -> 再昇格` で `source` が `'cache'` のまま維持され、初回成功まで `memory` に化けないこと**
   （`epoch` / `promotedAt` は更新される）、
+  **`F5n -> F10 -> 再昇格` と `F5n -> F8 -> F9` がどちらも F3 に入り、残っている localStorage
+  スナップショットを同一セッションでは再利用しないこと**、
+  **F5n が `grid` と `history` の両方を捨てること**、
   **F5n（成功だが `render_grid` が `null`）で `live`/`none` になりフレームが捨てられること**、
   および **`error`/`none` で `updatedAt` が無いとき鮮度ラベルが「接続なし」だけになること**
-- **`selectSurface` の原子性**（`useCmux` と `useTerminalFeeds` をまたぐ結合テスト）— `retained memory` /
-  `cache` / `none` の 3 入力それぞれで、**foreground が変わった最初のコミットが
-  `warming/memory` / `warming/cache` / `loading/none` であり、中間コミットが無いこと**。
-  `focus` と `promote` を別々に呼ぶ経路が存在しないこと
+- **合成 reducer の原子性と `added` 規則**（`lib/__tests__/view-state.test.ts` の `createSwitcherReducer`
+  と、`useCmux` の結合テストの両方）— D3.1 の受入条件 1〜5 をそのままテスト名にする:
+  `retained memory` / `cache` / `none` の 3 入力で**最初のコミットが
+  `warming/memory` / `warming/cache` / `loading/none` であり中間コミットが無いこと**、
+  **すでに `live/memory` の購読中 terminal を前面化しても `feeds` と `epoch` が不変であること**（F4）、
+  **browser を前面化しても `feeds` が不変であること**（D5）、
+  **`initialize` の最初の terminal に F2/F3 が適用されること**、
+  **購読集合が空の状態からの `reconcile` の退避先 terminal に F1〜F3 が適用されること**、
+  **`reconcile` が購読を削るだけのときは `feeds` が不変であること**。
+  あわせて **`focus` / `promote` が hook の公開 API に出ていないこと**
 
 **拡張**
 
@@ -884,13 +960,17 @@ export interface TerminalFeed {
   **D1.1 の 3 条件**: `surface.create` と `workspace.select` が 0 回であること、`workspace.create` が返した
   surface が PWA の前面になること、surface/workspace 両方の一覧が更新されること（1 本の hook テストで固定する）。
   あわせて **step 2 が共通 refresh 経路を 1 回だけ呼ぶこと**（refresh 要求数を数えて二重取得が無いことを固定）、
-  **返った `surface_ref` が再取得した一覧に無い場合は前面を変えずエラーにもしないこと**。
+  **`workspace.create` 直後の T3 が既存の T5 in-flight と衝突しても、step 3 が作成後のスナップショットを見ること**、
+  **返った `surface_ref` が再取得した一覧に無い場合は前面を変えずエラーにもしないこと**、
+  **step 3 が `focus` ではなく `selectSurface` を通ること**。
   **D10 の 4 ケース**: 切断時の既存 pending が 10 秒を待たず reject されること、**切断中に新しく呼んだ RPC が
   即 reject されること**、**アンマウントで pending と全ポーリング `setTimeout` が片付くこと**、
   **reject 後に遅れて届いた応答が破棄されること**。
   **D2.1 の topology 再取得**: T1〜T5 それぞれが再取得を起こすこと、in-flight 中は重ねて投げないこと（single-flight）、
   **in-flight 中に T1〜T4 が何回来ても queued refresh は 1 件までであること**、
   **その follow-up の実行中にさらに T3 を発火するともう 1 回走ること**（dirty を開始前に消費する規則）、
+  **`requestTopologyRefresh()` が「自分の要求を包含する refresh の適用」まで resolve しないこと**
+  （既存 in-flight の完了で resolve しないこと。`generation` で検証する）、
   `hidden` 中は止まること、
   **失敗しても既存の一覧を捨てないこと**、外部での create/close/`surface.move` が一覧に反映されること、
   **`closeWorkspace` の後にサーフェス一覧も `reconcile` されること**
@@ -946,6 +1026,32 @@ cmux を更新したらこれを流し、CLAUDE.md の記述と食い違わな�
 | R6 | タブ行の並びが `system.tree` 順のため並べ替えられない | 範囲外。cmux 側の並びと一致している方が混乱が少ない。`surface.reorder` は存在するが cmux 本体の並びを変えるため使わない |
 | R7 | iPhone 実機での CPU / 電池 / WS 転送量は未測定。§3.5 は Mac 側の UDS 占有のみ | 実装後に実機で前面 1Hz の体感と発熱を確認する。悪ければ `BACKGROUND_POLL_INTERVAL` を伸ばす（設定値の変更だけで済む） |
 | R8 | `focus:false` に変えると、`+` で作った端末が Mac 側で自動的に開かなくなる | UR4 の方針そのものであり意図した変更。CLAUDE.md に記録する |
+| R9 | **§4 D3.1 の合成 reducer（`createSwitcherReducer`）と D2.1 の `generation` 契約は、レビューを受けていない**（下記） | 実装時にここが最初の検証対象になる。§8 の該当テストを**先に**書いてから実装する |
+
+### レビューの到達点（記録）
+
+design review（codex / gpt-5.6-sol / xhigh）を **point=spec で 5 ラウンド**行った。これが運用上の上限である。
+
+| round | 対象 | 結果 |
+|---|---|---|
+| 1 | `9912285` / `fb8a95f` | needs_work |
+| 2 | `60efccc` | needs_work（P1 6 / P2 6） |
+| 3 | `3368e8f` | needs_work（P1 3 / P2 6） |
+| 4 | `d13d3fe` | needs_work（**P1 0** / P2 5。「次ラウンドで approve 可能な範囲」との評価） |
+| 5 | `0e3779a` | needs_work（P1 1 / P2 3） |
+
+**round 5 の P1 は round 4 の修正で持ち込んだ自己矛盾だった。** 原子性のために導入した
+`selectSurface` が `focus` と `promote` を別々の setter で呼ぶ形だったため、`promote` に
+変更前の `subscriptions` が届かず、「すでに購読中か」を判定できずに **F4 を必ず破る**
+（および browser・`initialize`・`reconcile` を表現できない）というものである。
+
+この指摘は妥当だったので、**`ViewState` と feed を 1 つの合成状態にして 1 つの reducer で動かし、
+「F1〜F3 を適用するのは `subscriptions` に新しく加わった ref だけ」という 1 行の規則**に
+置き換えた。round 5 の P2 3 件（F5n 後の cache 再利用条件、I5 の証明、共通 refresh の
+`generation` 契約）も同時に反映している。
+
+**ただしこの反映自体は 5 ラウンドの上限に達した後の変更であり、レビューを受けていない。**
+実装に入る前提としてこの事実を記録しておく。plan フェーズと code review で拾う。
 
 ## 付録 A. プローブの記録
 
