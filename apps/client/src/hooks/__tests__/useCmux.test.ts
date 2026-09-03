@@ -49,6 +49,7 @@ beforeEach(() => {
   hoisted.status.value = 'connected'
   hoisted.canSend.value = true
   hoisted.swallow.value = false
+  localStorage.clear()
 })
 
 describe('rpc の登録順（同期 echo の回帰ガード）', () => {
@@ -242,204 +243,293 @@ describe('useCmux surface RPC params', () => {
   })
 })
 
-describe('useCmux createSurface', () => {
-  it('新規サーフェス作成時に、作成したサーフェスのタブへ切り替える', async () => {
-    hoisted.responses['surface.list'] = {
-      surfaces: [{ index: 0, ref: 'surface:a1', selected: true, title: 'a1', type: 'terminal' }],
+describe('D1 workspace.select を一度も呼ばない', () => {
+  it('createWorkspace でも closeWorkspace でも workspace.select が飛ばない', async () => {
+    hoisted.responses['workspace.create'] = {
+      workspace_ref: 'workspace:30',
+      workspace_id: 'C459840B-0000-0000-0000-000000000030',
+      surface_ref: 'surface:200',
+      surface_id: 'S-200',
     }
-
-    const { result } = renderHook(() => useCmux())
-    await act(async () => {
-      await result.current.listSurfaces()
-    })
-    expect(result.current.currentSurface).toBe('surface:a1')
-
-    // 作成後の surface.list は新サーフェス a2 を含む（cmux 側は focus:true で a2 を選択）。
     hoisted.responses['surface.list'] = {
       surfaces: [
-        { index: 0, ref: 'surface:a1', selected: false, title: 'a1', type: 'terminal' },
-        { index: 1, ref: 'surface:a2', selected: true, title: 'a2', type: 'terminal' },
+        {
+          index: 0,
+          ref: 'surface:200',
+          selected: true,
+          title: 'zsh',
+          type: 'terminal',
+          workspace_ref: 'workspace:30',
+          workspace_title: '30',
+          workspace_id: 'C459840B-0000-0000-0000-000000000030',
+        },
       ],
     }
-    await act(async () => {
-      await result.current.createSurface()
-    })
-
-    // 旧タブの維持ではなく、新規作成したサーフェスへ切り替わっていること
-    expect(result.current.surfaces).toHaveLength(2)
-    expect(result.current.currentSurface).toBe('surface:a2')
-  })
-})
-
-describe('useCmux selectWorkspace', () => {
-  it('ワークスペース切替時に前ワークスペースの surfaces/currentSurface を残さない', async () => {
-    hoisted.responses['workspace.list'] = {
-      workspaces: [
-        { id: 'w1', ref: 'workspace:A', title: 'A', index: 0, selected: true },
-        { id: 'w2', ref: 'workspace:B', title: 'B', index: 1 },
-      ],
-    }
-    hoisted.responses['surface.list'] = {
-      surfaces: [{ index: 0, ref: 'surface:a1', selected: true, title: 'a1', type: 'terminal' }],
-    }
-
+    hoisted.responses['workspace.list'] = { workspaces: [{ ref: 'workspace:30' }] }
     const { result } = renderHook(() => useCmux())
 
     await act(async () => {
-      await result.current.listWorkspaces()
-      await result.current.listSurfaces('workspace:A')
+      await result.current.createWorkspace()
+      await result.current.closeWorkspace('workspace:30')
     })
 
-    // 前提: ワークスペース A の surface が選択された状態
-    expect(result.current.currentWorkspace).toBe('workspace:A')
-    expect(result.current.currentSurface).toBe('surface:a1')
-    expect(result.current.surfaces).toHaveLength(1)
-
-    // ワークスペース B へ切替（B の surface.list はまだ反映していない状態を模す）
-    act(() => {
-      result.current.selectWorkspace('workspace:B')
-    })
-
-    // 切替直後、古い A の view を残さず即座にクリアされていること
-    expect(result.current.currentWorkspace).toBe('workspace:B')
-    expect(result.current.surfaces).toEqual([])
-    expect(result.current.currentSurface).toBeNull()
+    const methods = hoisted.sent.map((raw) => (JSON.parse(raw) as { method: string }).method)
+    expect(methods).not.toContain('workspace.select')
   })
 
-  it('cmux 側のワークスペースも workspace.select で追従させる（非選択ワークスペースのターミナルは読めないため）', async () => {
+  it('selectWorkspace は公開 API から消えている', () => {
     const { result } = renderHook(() => useCmux())
-
-    act(() => {
-      result.current.selectWorkspace('workspace:B')
-    })
-
-    const selectReq = hoisted.sent
-      .map((raw) => JSON.parse(raw) as { method: string; params: Record<string, unknown> })
-      .find((req) => req.method === 'workspace.select')
-
-    expect(selectReq).toBeDefined()
-    expect(selectReq?.params).toEqual({ workspace_id: 'workspace:B' })
-  })
-})
-
-describe('useCmux closeWorkspace', () => {
-  const findReq = (method: string) =>
-    hoisted.sent
-      .map((raw) => JSON.parse(raw) as { method: string; params: Record<string, unknown> })
-      .find((req) => req.method === method)
-
-  it('workspace.close を workspace_id パラメータで送る（ref ではなく id キー）', async () => {
-    const { result } = renderHook(() => useCmux())
-    await act(async () => {
-      await result.current.closeWorkspace('workspace:B')
-    })
-    const req = findReq('workspace.close')
-    expect(req).toBeDefined()
-    expect(req?.params).toEqual({ workspace_id: 'workspace:B' })
-    expect(req?.params).not.toHaveProperty('workspace_ref')
+    expect('selectWorkspace' in result.current).toBe(false)
   })
 
-  it('現在のワークスペースを閉じると、残りの selected ワークスペースへフォールバックする', async () => {
-    hoisted.responses['workspace.list'] = {
-      workspaces: [
-        { id: 'w1', ref: 'workspace:A', title: 'A', index: 0, selected: true },
-        { id: 'w2', ref: 'workspace:B', title: 'B', index: 1 },
-      ],
-    }
+  it('移行用 shim（currentSurface / focusSurface）はまだ残っている', () => {
     const { result } = renderHook(() => useCmux())
-    await act(async () => {
-      await result.current.listWorkspaces()
-    })
-    expect(result.current.currentWorkspace).toBe('workspace:A')
-
-    // A を閉じた後の workspace.list は B のみ（cmux が B を selected にする）。
-    hoisted.responses['workspace.list'] = {
-      workspaces: [{ id: 'w2', ref: 'workspace:B', title: 'B', index: 1, selected: true }],
-    }
-    await act(async () => {
-      await result.current.closeWorkspace('workspace:A')
-    })
-    expect(result.current.currentWorkspace).toBe('workspace:B')
+    expect('currentSurface' in result.current).toBe(true)
+    expect(typeof result.current.focusSurface).toBe('function')
   })
 
-  it('非現在のワークスペースを閉じても currentWorkspace は維持される', async () => {
-    hoisted.responses['workspace.list'] = {
-      workspaces: [
-        { id: 'w1', ref: 'workspace:A', title: 'A', index: 0, selected: true },
-        { id: 'w2', ref: 'workspace:B', title: 'B', index: 1 },
-      ],
-    }
-    const { result } = renderHook(() => useCmux())
-    await act(async () => {
-      await result.current.listWorkspaces()
-    })
-    expect(result.current.currentWorkspace).toBe('workspace:A')
-
-    // B を閉じた後の list は A のみ（A は selected 維持）。
-    hoisted.responses['workspace.list'] = {
-      workspaces: [{ id: 'w1', ref: 'workspace:A', title: 'A', index: 0, selected: true }],
-    }
-    await act(async () => {
-      await result.current.closeWorkspace('workspace:B')
-    })
-    expect(result.current.currentWorkspace).toBe('workspace:A')
-  })
-
-  it('現在のワークスペースを閉じると surfaces/currentSurface をクリアする', async () => {
-    hoisted.responses['workspace.list'] = {
-      workspaces: [{ id: 'w1', ref: 'workspace:A', title: 'A', index: 0, selected: true }],
-    }
-    hoisted.responses['surface.list'] = {
-      surfaces: [{ index: 0, ref: 'surface:a1', selected: true, title: 'a1', type: 'terminal' }],
-    }
-    const { result } = renderHook(() => useCmux())
-    await act(async () => {
-      await result.current.listWorkspaces()
-      await result.current.listSurfaces('workspace:A')
-    })
-    expect(result.current.surfaces).toHaveLength(1)
-    expect(result.current.currentSurface).toBe('surface:a1')
-
-    // A を閉じた後の list は空（最後の WS）。
+  it('closeWorkspace は workspace と surface の一覧を各 1 回更新する', async () => {
     hoisted.responses['workspace.list'] = { workspaces: [] }
+    hoisted.responses['surface.list'] = { surfaces: [] }
+    const { result } = renderHook(() => useCmux())
+
     await act(async () => {
-      await result.current.closeWorkspace('workspace:A')
+      await result.current.closeWorkspace('workspace:30')
     })
-    expect(result.current.surfaces).toEqual([])
-    expect(result.current.currentSurface).toBeNull()
+
+    const methods = hoisted.sent.map((raw) => (JSON.parse(raw) as { method: string }).method)
+    expect(methods.filter((method) => method === 'workspace.list')).toHaveLength(1)
+    expect(methods.filter((method) => method === 'surface.list')).toHaveLength(1)
   })
 })
 
-describe('useCmux createWorkspace', () => {
-  const findReq = (method: string) =>
-    hoisted.sent
-      .map((raw) => JSON.parse(raw) as { method: string; params: Record<string, unknown> })
-      .find((req) => req.method === method)
-
-  it('workspace.create を送り、返り値 workspace_ref で workspace.select を送る', async () => {
-    hoisted.responses['workspace.create'] = { workspace_ref: 'workspace:NEW' }
-    hoisted.responses['workspace.list'] = {
-      workspaces: [
-        { id: 'old', ref: 'workspace:OLD', title: 'Old', index: 0, selected: true },
-        { id: 'new', ref: 'workspace:NEW', title: 'New', index: 1, selected: false },
+describe('D1.1 createWorkspace の 3 手順', () => {
+  it('surface.create を呼ばず、workspace.create が返した surface を前面化する', async () => {
+    hoisted.responses['workspace.create'] = {
+      workspace_ref: 'workspace:30',
+      workspace_id: 'C459840B-0000-0000-0000-000000000030',
+      surface_ref: 'surface:200',
+      surface_id: 'S-200',
+    }
+    hoisted.responses['surface.list'] = {
+      surfaces: [
+        {
+          index: 0,
+          ref: 'surface:200',
+          selected: true,
+          title: 'zsh',
+          type: 'terminal',
+          workspace_ref: 'workspace:30',
+          workspace_title: '30',
+          workspace_id: 'C459840B-0000-0000-0000-000000000030',
+        },
       ],
     }
-
+    hoisted.responses['workspace.list'] = { workspaces: [{ ref: 'workspace:30' }] }
     const { result } = renderHook(() => useCmux())
+
     await act(async () => {
       await result.current.createWorkspace()
     })
 
-    // workspace.create は空パラメータで送る（既定ディレクトリの新規WSを作る）
-    const createReq = findReq('workspace.create')
-    expect(createReq).toBeDefined()
-    expect(createReq?.params).toEqual({})
+    const methods = hoisted.sent.map((raw) => (JSON.parse(raw) as { method: string }).method)
+    expect(methods).not.toContain('surface.create')
+    expect(methods.filter((method) => method === 'surface.list')).toHaveLength(1)
+    expect(result.current.view.foreground).toBe('surface:200')
+    expect(result.current.view.subscriptions.map((subscription) => subscription.ref)).toContain('surface:200')
+  })
 
-    // 返り値 workspace_ref を使い cmux 側も追従選択する
-    const selectReq = findReq('workspace.select')
-    expect(selectReq?.params).toEqual({ workspace_id: 'workspace:NEW' })
+  it('返った surface_ref が一覧に無ければ前面を変えず、エラーにもしない', async () => {
+    hoisted.responses['workspace.create'] = { workspace_ref: 'workspace:30', surface_ref: 'surface:999' }
+    hoisted.responses['surface.list'] = {
+      surfaces: [
+        {
+          index: 0,
+          ref: 'surface:1',
+          selected: true,
+          title: 'a',
+          type: 'terminal',
+          workspace_ref: 'workspace:1',
+          workspace_title: '1',
+          workspace_id: 'W1',
+        },
+      ],
+    }
+    const { result } = renderHook(() => useCmux())
+    act(() => {
+      result.current.initializeFrom(
+        [{ ref: 'surface:1', type: 'terminal', workspace_ref: 'workspace:1', index: 0 }],
+        null,
+      )
+    })
 
-    // アプリ側の currentWorkspace も新WSへ切り替わる
-    expect(result.current.currentWorkspace).toBe('workspace:NEW')
+    await act(async () => {
+      await expect(result.current.createWorkspace()).resolves.toBeDefined()
+    })
+
+    expect(result.current.view.foreground).toBe('surface:1')
+  })
+})
+
+describe('P7/P8/P9 createSurface', () => {
+  it('workspace_id を渡し、レスポンスの surface_ref を前面化する（差分探索をしない）', async () => {
+    hoisted.responses['surface.create'] = {
+      surface_ref: 'surface:118',
+      surface_id: 'S-118',
+      workspace_id: 'W26',
+      type: 'terminal',
+    }
+    hoisted.responses['surface.list'] = {
+      surfaces: [
+        {
+          index: 0,
+          ref: 'surface:118',
+          selected: true,
+          title: 'zsh',
+          type: 'terminal',
+          workspace_ref: 'workspace:26',
+          workspace_title: '26',
+          workspace_id: 'W26',
+        },
+      ],
+    }
+    const { result } = renderHook(() => useCmux())
+
+    await act(async () => {
+      await result.current.createSurface('W26')
+    })
+
+    const create = hoisted.sent
+      .map((raw) => JSON.parse(raw) as { method: string; params: Record<string, string | undefined> })
+      .find((request) => request.method === 'surface.create')
+    expect(create?.params.workspace_id).toBe('W26')
+    expect(create?.params.workspace_ref).toBeUndefined()
+    expect(result.current.view.foreground).toBe('surface:118')
+  })
+
+  it('レスポンスの workspace_id が要求と違えば警告を返すが、端末は残す（P8）', async () => {
+    hoisted.responses['surface.create'] = { surface_ref: 'surface:118', workspace_id: 'W1' }
+    hoisted.responses['surface.list'] = {
+      surfaces: [
+        {
+          index: 0,
+          ref: 'surface:118',
+          selected: true,
+          title: 'zsh',
+          type: 'terminal',
+          workspace_ref: 'workspace:1',
+          workspace_title: '1',
+          workspace_id: 'W1',
+        },
+      ],
+    }
+    const { result } = renderHook(() => useCmux())
+    let outcome: { misplaced: boolean } | undefined
+
+    await act(async () => {
+      outcome = await result.current.createSurface('W26')
+    })
+
+    expect(outcome?.misplaced).toBe(true)
+    expect(result.current.view.foreground).toBe('surface:118')
+  })
+})
+
+describe('listSurfaces は全ワークスペースを取る', () => {
+  it('workspace_ref を渡さない', async () => {
+    hoisted.responses['surface.list'] = { surfaces: [] }
+    const { result } = renderHook(() => useCmux())
+
+    await act(async () => {
+      await result.current.listSurfaces()
+    })
+
+    const request = hoisted.sent
+      .map((raw) => JSON.parse(raw) as { method: string; params: Record<string, string | undefined> })
+      .find((candidate) => candidate.method === 'surface.list')
+    expect(request?.params.workspace_ref).toBeUndefined()
+  })
+})
+
+describe('currentWorkspace は導出値', () => {
+  it('前面のワークスペースに追従する', () => {
+    const { result } = renderHook(() => useCmux())
+    act(() => {
+      result.current.initializeFrom(
+        [
+          { ref: 'surface:1', type: 'terminal', workspace_ref: 'workspace:1', index: 0 },
+          { ref: 'surface:2', type: 'terminal', workspace_ref: 'workspace:26', index: 1 },
+        ],
+        'surface:2',
+      )
+    })
+    expect(result.current.currentWorkspace).toBe('workspace:26')
+  })
+})
+
+describe('D3.1 selectSurface の原子性（合成 reducer の結合テスト）', () => {
+  const renderCounts: { view: string | null; feedStatus: string | undefined }[] = []
+
+  function useTrackingHook() {
+    const cmux = useCmux()
+    renderCounts.push({
+      view: cmux.view.foreground,
+      feedStatus: cmux.view.foreground === null ? undefined : cmux.feeds.get(cmux.view.foreground)?.status,
+    })
+    return cmux
+  }
+
+  beforeEach(() => {
+    renderCounts.length = 0
+    localStorage.clear()
+  })
+
+  it('none: 最初のコミットで loading/none になっている（中間コミットが無い）', () => {
+    const { result } = renderHook(() => useTrackingHook())
+    const surfaces = [{ ref: 'surface:1', type: 'terminal', workspace_ref: 'workspace:1', index: 0 }]
+    act(() => {
+      result.current.initializeFrom(surfaces, 'surface:1')
+    })
+    const firstWithForeground = renderCounts.find((render) => render.view === 'surface:1')
+    expect(firstWithForeground?.feedStatus).toBe('loading')
+  })
+
+  it('cache: 最初のコミットで warming/cache になっている', () => {
+    localStorage.setItem('cmux-surface-cache:surface:1', JSON.stringify({ scrollback: 'cached', updatedAt: 500 }))
+    const { result } = renderHook(() => useTrackingHook())
+    const surfaces = [{ ref: 'surface:1', type: 'terminal', workspace_ref: 'workspace:1', index: 0 }]
+    act(() => {
+      result.current.initializeFrom(surfaces, 'surface:1')
+    })
+    const first = renderCounts.find((render) => render.view === 'surface:1')
+    expect(first?.feedStatus).toBe('warming')
+    expect(result.current.feeds.get('surface:1')?.source).toBe('cache')
+  })
+
+  it('focus / promote は hook の公開 API に出ていない', () => {
+    const { result } = renderHook(() => useCmux())
+    expect('focus' in result.current).toBe(false)
+    expect('promote' in result.current).toBe(false)
+    expect('reconcile' in result.current).toBe(false)
+    expect('initialize' in result.current).toBe(false)
+  })
+})
+
+describe('既存ガードの複数端末版', () => {
+  it('read_text / terminal.replay / send_text は surface_id を使い surface_ref を使わない', async () => {
+    const { result } = renderHook(() => useCmux())
+    await act(async () => {
+      await result.current.readText('surface:5')
+      await result.current.readGrid('surface:6')
+      await result.current.sendText('surface:7', 'ls')
+    })
+    const requests = hoisted.sent.map(
+      (raw) => JSON.parse(raw) as { method: string; params: Record<string, string | number | boolean | undefined> },
+    )
+    for (const method of ['surface.read_text', 'terminal.replay', 'surface.send_text']) {
+      const request = requests.find((candidate) => candidate.method === method)
+      expect(request?.params.surface_ref).toBeUndefined()
+      expect(typeof request?.params.surface_id).toBe('string')
+    }
   })
 })

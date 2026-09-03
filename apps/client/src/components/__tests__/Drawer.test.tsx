@@ -15,7 +15,6 @@ function renderDrawer(notifications: CmuxNotification[] = []) {
       workspaces={[ws]}
       currentWorkspace="workspace:A"
       notifications={notifications}
-      onSelect={() => {}}
       onCloseWorkspace={onCloseWorkspace}
       onNewWorkspace={vi.fn().mockResolvedValue(undefined)}
       onClose={() => {}}
@@ -51,10 +50,9 @@ describe('Drawer close workspace (確認ダイアログ)', () => {
   })
 })
 
-describe('Drawer workspace select (ピン留めサイドバーは閉じない)', () => {
-  function renderForSelect(innerWidth: number) {
+describe('Drawer workspace row', () => {
+  function renderWorkspaceRow(innerWidth: number) {
     Object.defineProperty(window, 'innerWidth', { value: innerWidth, configurable: true, writable: true })
-    const onSelect = vi.fn()
     const onClose = vi.fn()
     render(
       <Drawer
@@ -62,27 +60,18 @@ describe('Drawer workspace select (ピン留めサイドバーは閉じない)',
         workspaces={[ws]}
         currentWorkspace="workspace:A"
         notifications={[]}
-        onSelect={onSelect}
         onCloseWorkspace={() => {}}
         onNewWorkspace={vi.fn().mockResolvedValue(undefined)}
         onClose={onClose}
       />,
     )
-    return { onSelect, onClose }
+    return onClose
   }
 
-  it('デスクトップ/タブレット幅では選択しても onClose を呼ばない（ピン留め維持）', () => {
-    const { onSelect, onClose } = renderForSelect(1024)
+  it('行タップは workspace.select 相当の callback を要求せず、ドロワーも閉じない', () => {
+    const onClose = renderWorkspaceRow(500)
     fireEvent.click(screen.getByText('Alpha'))
-    expect(onSelect).toHaveBeenCalledWith('workspace:A')
     expect(onClose).not.toHaveBeenCalled()
-  })
-
-  it('モバイル幅では選択でオーバーレイを閉じる（onClose を呼ぶ）', () => {
-    const { onSelect, onClose } = renderForSelect(500)
-    fireEvent.click(screen.getByText('Alpha'))
-    expect(onSelect).toHaveBeenCalledWith('workspace:A')
-    expect(onClose).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -106,7 +95,6 @@ describe('Drawer new workspace button', () => {
         workspaces={[ws]}
         currentWorkspace="workspace:A"
         notifications={[]}
-        onSelect={() => {}}
         onCloseWorkspace={() => {}}
         onNewWorkspace={onNewWorkspace}
         onClose={() => {}}

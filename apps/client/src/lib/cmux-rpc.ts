@@ -45,11 +45,17 @@ export interface Pane {
 export interface Surface {
   index: number
   ref: string
+  // ペイン内選択。全ワークスペースを平坦化すると複数 true になり得る（active とは別物）。
   selected: boolean
+  // system.tree の result.active.surface_ref と一致する 1 件だけ true。初期前面の決定に使う。
+  active?: boolean
   title: string
   type: string
   pane_ref?: string
-  // Present for browser surfaces (null/undefined for terminals); rendered in an iframe.
+  workspace_ref: string
+  workspace_title: string
+  // surface.create の作成先指定に使う UUID（workspace_ref は無視される）。
+  workspace_id: string
   url?: string | null
 }
 

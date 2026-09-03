@@ -1,16 +1,61 @@
 // @vitest-environment jsdom
-import { render, waitFor } from '@testing-library/react'
+import { act, render, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { App } from '../App'
 
-// useCmux をモックし、listSurfaces/listPanes に渡された workspaceRef を記録する。
+interface WorkspaceStub {
+  id: string
+  ref: string
+  title: string
+  index: number
+  selected: boolean
+}
+
+interface SurfaceStub {
+  index: number
+  ref: string
+  selected: boolean
+  title: string
+  type: string
+  workspace_ref: string
+  workspace_title: string
+  workspace_id: string
+}
+
+interface CmuxStateStub {
+  status: 'connected'
+  workspaces: WorkspaceStub[]
+  currentWorkspace: string | null
+  surfaces: SurfaceStub[]
+  currentSurface: string | null
+  notifications: never[]
+  view: { subscriptions: { ref: string }[] }
+  listWorkspaces: () => Promise<WorkspaceStub[]>
+  listPanes: () => Promise<never[]>
+  listSurfaces: (ref?: string) => Promise<SurfaceStub[]>
+  createSurface: (workspaceId: string) => Promise<{ list: SurfaceStub[]; misplaced: boolean }>
+  createWorkspace: () => Promise<SurfaceStub[]>
+  closeSurface: (ref: string) => Promise<SurfaceStub[]>
+  closeWorkspace: (ref: string) => Promise<WorkspaceStub[]>
+  focusSurface: (ref: string) => void
+  selectSurface: (surface: SurfaceStub) => void
+  initializeFrom: (surfaces: SurfaceStub[], preferredRef: string | null) => void
+  readText: () => Promise<string>
+  readGrid: () => Promise<{ columns: number; rows: number; styles: never[]; row_spans: never[] }>
+  sendText: () => Promise<void>
+  sendKey: () => Promise<void>
+  listNotifications: () => Promise<never[]>
+  navigateSurface: () => void
+}
+
+// useCmux をモックし、listSurfaces の呼び出し引数を記録する。
 const cmux = vi.hoisted(() => ({
-  // biome-ignore lint/suspicious/noExplicitAny: テスト用のフック戻り値スタブ
-  state: {} as any,
+  state: {} as CmuxStateStub,
   listSurfaceCalls: [] as (string | undefined)[],
   // true のとき Terminal がレンダリング例外を投げる（停止端末の grid.columns クラッシュを再現）。
   terminalThrows: false,
+  messageListener: { fn: (_event: MessageEvent) => {} },
 }))
 
 vi.mock('../hooks/useCmux', () => ({ useCmux: () => cmux.state }))
@@ -25,13 +70,27 @@ vi.mock('../lib/token', () => ({ getAuthToken: () => 'tok', saveAuthToken: () =>
 beforeEach(() => {
   cmux.listSurfaceCalls = []
   cmux.terminalThrows = false
+  cmux.messageListener.fn = () => {}
+  Object.defineProperty(navigator, 'serviceWorker', {
+    configurable: true,
+    value: {
+      addEventListener: (_type: string, listener: (event: MessageEvent) => void) => {
+        cmux.messageListener.fn = listener
+      },
+      removeEventListener: vi.fn(),
+    },
+  })
   // jsdom は matchMedia 未実装のためスタブする。
   window.matchMedia = vi.fn().mockReturnValue({
     matches: false,
+    media: '',
+    onchange: null,
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
-    // biome-ignore lint/suspicious/noExplicitAny: matchMedia スタブ
-  }) as any
+    dispatchEvent: vi.fn(() => true),
+  } satisfies MediaQueryList)
   cmux.state = {
     status: 'connected',
     workspaces: [{ id: 'w1', ref: 'workspace:A', title: 'A', index: 0, selected: true }],
@@ -39,16 +98,22 @@ beforeEach(() => {
     surfaces: [],
     currentSurface: null,
     notifications: [],
-    listWorkspaces: vi.fn(() => Promise.resolve([{ ref: 'workspace:A', selected: true }])),
-    selectWorkspace: vi.fn(),
+    view: { subscriptions: [] },
+    listWorkspaces: vi.fn(() =>
+      Promise.resolve([{ id: 'w1', ref: 'workspace:A', title: 'A', index: 0, selected: true }]),
+    ),
     listPanes: vi.fn(() => Promise.resolve([])),
     listSurfaces: vi.fn((ref?: string) => {
       cmux.listSurfaceCalls.push(ref)
       return Promise.resolve([])
     }),
-    createSurface: vi.fn(() => Promise.resolve([])),
+    createSurface: vi.fn(() => Promise.resolve({ list: [], misplaced: false })),
+    createWorkspace: vi.fn(() => Promise.resolve([])),
     closeSurface: vi.fn(() => Promise.resolve([])),
+    closeWorkspace: vi.fn(() => Promise.resolve([])),
     focusSurface: vi.fn(),
+    selectSurface: vi.fn(),
+    initializeFrom: vi.fn(),
     readText: vi.fn(() => Promise.resolve('')),
     readGrid: vi.fn(() => Promise.resolve({ columns: 80, rows: 24, styles: [], row_spans: [] })),
     sendText: vi.fn(() => Promise.resolve()),
@@ -59,16 +124,37 @@ beforeEach(() => {
 })
 
 describe('App surface フェッチ', () => {
-  it('surface.list を常に workspace_ref 付きで取得し、全ワークスペースの混入を招く未指定取得をしない', async () => {
+  it('surface.list を workspace_ref なしで取得する', async () => {
     render(<App />)
 
-    // 初期化チェーン（listWorkspaces → listNotifications）の完了を待つ。
+    // 初期化 RPC の完了を待つ。
     await waitFor(() => expect(cmux.state.listNotifications).toHaveBeenCalled())
 
     expect(cmux.listSurfaceCalls.length).toBeGreaterThan(0)
-    // workspaceRef 未指定（undefined）の呼び出しがあると、サーバーは全ワークスペースの
-    // surface を返してしまい、他ワークスペースのタブが混入する。
-    expect(cmux.listSurfaceCalls.every((ref) => ref === 'workspace:A')).toBe(true)
+    expect(cmux.listSurfaceCalls.every((ref) => ref === undefined)).toBe(true)
+    expect(cmux.state.initializeFrom).toHaveBeenCalledWith([], null)
+  })
+
+  it('SW の workspace UUID を購読中 surface に解決して selectSurface する', () => {
+    const surface: SurfaceStub = {
+      index: 0,
+      ref: 'surface:1',
+      selected: true,
+      title: 'zsh',
+      type: 'terminal',
+      workspace_ref: 'workspace:A',
+      workspace_title: 'A',
+      workspace_id: 'w1',
+    }
+    cmux.state.surfaces = [surface]
+    cmux.state.view = { subscriptions: [{ ref: 'surface:1' }] }
+
+    render(<App />)
+    act(() => {
+      cmux.messageListener.fn(new MessageEvent('message', { data: { type: 'navigate', workspaceId: 'w1' } }))
+    })
+
+    expect(cmux.state.selectSurface).toHaveBeenCalledWith(surface)
   })
 })
 
@@ -79,7 +165,18 @@ describe('App コンテンツのエラー境界分離', () => {
     // 同じ surface が復元されて即再クラッシュし逃げ場が消えるための回帰ガード。
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     cmux.terminalThrows = true
-    cmux.state.surfaces = [{ ref: 'surface:1', pane_ref: 'pane:1', title: 't1', type: 'terminal', index: 0 }]
+    cmux.state.surfaces = [
+      {
+        ref: 'surface:1',
+        title: 't1',
+        type: 'terminal',
+        index: 0,
+        selected: true,
+        workspace_ref: 'workspace:A',
+        workspace_title: 'A',
+        workspace_id: 'w1',
+      },
+    ]
     cmux.state.currentSurface = 'surface:1'
 
     const { getByLabelText } = render(<App />)

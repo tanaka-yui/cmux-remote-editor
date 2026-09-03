@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 
 import {
   type CmuxNotification,
@@ -11,7 +11,15 @@ import {
 import type { RenderGrid } from '../lib/render-grid'
 import type { RpcError } from '../lib/rpc-error'
 import { resolveSelectedRef } from '../lib/selection'
+import { loadSurfaceScreen } from '../lib/surface-cache'
 import { getAuthToken } from '../lib/token'
+import {
+  createSwitcherReducer,
+  MAX_LIVE_SUBSCRIPTIONS,
+  type SurfaceLike,
+  type SwitcherState,
+  type TerminalFeed,
+} from '../lib/view-state'
 import { type ConnectionStatus, useWebSocket } from './useWebSocket'
 
 interface PendingRequest {
@@ -24,13 +32,34 @@ const RPC_TIMEOUT = 10_000
 
 export function useCmux() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
-  const [currentWorkspace, setCurrentWorkspace] = useState<string | null>(null)
   const [panes, setPanes] = useState<Pane[]>([])
   const [currentPane, setCurrentPane] = useState<string | null>(null)
   const [surfaces, setSurfaces] = useState<Surface[]>([])
-  const [currentSurface, setCurrentSurface] = useState<string | null>(null)
   const [notifications, setNotifications] = useState<CmuxNotification[]>([])
   const pendingRef = useRef(new Map<string, PendingRequest>())
+  const reducer = useMemo(() => createSwitcherReducer(loadSurfaceScreen), [])
+  const [switcher, dispatch] = useReducer(
+    reducer,
+    undefined,
+    (): SwitcherState => ({
+      view: { subscriptions: [], foreground: null, foregroundWorkspaceRef: null },
+      feeds: new Map<string, TerminalFeed>(),
+    }),
+  )
+
+  // 前面を変える公開経路はこの 3 つだけ。focus / promote / initialize / reconcile は公開しない。
+  const selectSurface = useCallback((surface: SurfaceLike) => {
+    dispatch({ type: 'select', surface, now: Date.now(), cap: MAX_LIVE_SUBSCRIPTIONS })
+  }, [])
+  const initializeFrom = useCallback((surfaceList: readonly SurfaceLike[], preferredRef: string | null) => {
+    dispatch({ type: 'initialize', surfaces: surfaceList, preferredRef, now: Date.now() })
+  }, [])
+  const reconcileWith = useCallback((surfaceList: readonly SurfaceLike[]) => {
+    dispatch({ type: 'reconcile', surfaces: surfaceList, now: Date.now() })
+  }, [])
+
+  // 保持する state ではなく前面サーフェスからの導出値。
+  const currentWorkspace = switcher.view.foregroundWorkspaceRef
 
   const rejectAllPending = useCallback((reason: string) => {
     for (const [, pending] of pendingRef.current) {
@@ -106,47 +135,8 @@ export function useCmux() {
     const result = (await rpc('workspace.list')) as { workspaces: Workspace[] }
     const wsList = result.workspaces ?? []
     setWorkspaces(wsList)
-    setCurrentWorkspace((prev) =>
-      resolveSelectedRef(
-        prev,
-        wsList,
-        (w) => w.ref,
-        (w) => !!w.selected,
-      ),
-    )
     return wsList
   }, [rpc])
-
-  const selectWorkspace = useCallback(
-    (ref: string) => {
-      if (ref === currentWorkspace) return
-      // cmux は選択中ワークスペース以外のターミナルを読めない（surface.read_text が
-      // internal_error を返す）ため、cmux 側のワークスペースも追従して切り替える。
-      // タブ選択は PWA 側のみで、ローカルのペインフォーカスは奪わない。
-      rpc('workspace.select', { workspace_id: ref }).catch((err) =>
-        console.error('[cmux] workspace.select error:', err),
-      )
-      // 前ワークスペースの surfaces/pane 状態を即座に空へリセットする。これをしないと、
-      // 新ワークスペースの surface.list が非同期で解決するまで（失敗時は恒久的に）
-      // 前ワークスペースのタブ・ターミナル内容が残って見えてしまう。
-      setCurrentWorkspace(ref)
-      setSurfaces([])
-      setCurrentSurface(null)
-      setPanes([])
-      setCurrentPane(null)
-    },
-    [currentWorkspace, rpc],
-  )
-
-  const createWorkspace = useCallback(async () => {
-    // workspace.create は ws.ts が透過中継する。空パラメータで既定ディレクトリの新規WS
-    // (+ターミナル surface 1つ)を作る。cmux 側は新WSを自動選択しないため、返り値の
-    // workspace_ref を既存 selectWorkspace で追従選択する(非選択WSは read_text 不可)。
-    const result = (await rpc('workspace.create')) as { workspace_ref?: string }
-    const list = await listWorkspaces()
-    if (result.workspace_ref) selectWorkspace(result.workspace_ref)
-    return list
-  }, [rpc, listWorkspaces, selectWorkspace])
 
   const listPanes = useCallback(
     async (workspaceRef?: string) => {
@@ -168,60 +158,58 @@ export function useCmux() {
     [rpc],
   )
 
-  // Switching tabs in the remote viewer only changes which surface we poll via
-  // read-screen --surface; it does not steal focus in the local cmux. This keeps
-  // switching instant and independent of the (unreliable) surface.focus RPC.
-  const focusSurface = useCallback((surfaceRef: string) => {
-    setCurrentSurface(surfaceRef)
-    setCurrentPane(surfaceRef)
-  }, [])
-
-  const listSurfaces = useCallback(
-    async (workspaceRef?: string) => {
-      const params: Record<string, unknown> = {}
-      if (workspaceRef) params.workspace_ref = workspaceRef
-      const result = (await rpc('surface.list', params)) as { surfaces?: Surface[] }
-      const list = result.surfaces ?? []
-      setSurfaces(list)
-      // アプリ側の選択を優先し、cmux の selected には初回のみ追従する。
-      // 選択中サーフェスがリモートで閉じられたら先頭へ退避する。
-      setCurrentSurface((prev) =>
-        resolveSelectedRef(
-          prev,
-          list,
-          (s) => s.ref,
-          (s) => s.selected,
-        ),
-      )
-      return list
+  // ---- 移行用 shim。Task 11 で削除する。新しいコードから使わないこと。----
+  /** @deprecated Task 11 で削除。view.foreground を使う */
+  const currentSurface = switcher.view.foreground
+  /** @deprecated Task 11 で削除。selectSurface(surface) を使う */
+  const focusSurface = useCallback(
+    (ref: string) => {
+      const surface = surfaces.find((s) => s.ref === ref)
+      if (surface) selectSurface(surface)
     },
-    [rpc],
+    [surfaces, selectSurface],
   )
+
+  const listSurfaces = useCallback(async () => {
+    const result = (await rpc('surface.list')) as { surfaces?: Surface[] }
+    const list = result.surfaces ?? []
+    setSurfaces(list)
+    reconcileWith(list)
+    return list
+  }, [rpc, reconcileWith])
 
   const createSurface = useCallback(
-    async (workspaceRef?: string) => {
-      const beforeRefs = new Set(surfaces.map((s) => s.ref))
-      const params: Record<string, unknown> = {}
-      if (workspaceRef) params.workspace_ref = workspaceRef
-      await rpc('surface.create', params)
-      const list = await listSurfaces(workspaceRef)
-      // 新規作成したサーフェスへ明示的に切り替える。listSurfaces はアプリ優先で既存の
-      // 選択(prev)を維持するため、これがないと新タブが作られても表示が切り替わらず、
-      // タブ据え置きのまま中身だけ入れ替わったように見えてしまう。作成前後の差分で
-      // 新 ref を特定する（selected フラグはマルチペインで複数 true になり得るため）。
-      const created = list.find((s) => !beforeRefs.has(s.ref))
-      if (created) focusSurface(created.ref)
-      return list
+    async (workspaceId: string): Promise<{ list: Surface[]; misplaced: boolean }> => {
+      // workspace_ref は無視される。workspace_id（UUID）だけが作成先指定に使われる。
+      const created = (await rpc('surface.create', { workspace_id: workspaceId })) as {
+        surface_ref?: string
+        workspace_id?: string
+      }
+      // 無効な UUID はエラーではなく選択中 WS への作成になる。端末は残し、誤配置だけ返す。
+      const misplaced = created.workspace_id !== undefined && created.workspace_id !== workspaceId
+      const list = await listSurfaces()
+      const surface = list.find((candidate) => candidate.ref === created.surface_ref)
+      if (surface) selectSurface(surface)
+      return { list, misplaced }
     },
-    [rpc, listSurfaces, focusSurface, surfaces],
+    [rpc, listSurfaces, selectSurface],
   )
 
+  const createWorkspace = useCallback(async () => {
+    // workspace.create 自体が既定 terminal を作るため、surface.create は重ねて呼ばない。
+    const created = (await rpc('workspace.create')) as { surface_ref?: string }
+    const [list] = await Promise.all([listSurfaces(), listWorkspaces()])
+    const surface = list.find((candidate) => candidate.ref === created.surface_ref)
+    if (surface) selectSurface(surface)
+    return list
+  }, [rpc, listSurfaces, listWorkspaces, selectSurface])
+
   const closeSurface = useCallback(
-    async (surfaceRef: string, workspaceRef?: string) => {
+    async (surfaceRef: string) => {
       // cmux ソケットの surface.close は `surface_id` を読む（`surface_ref` は無視され
       // フォーカス中のサーフェスにフォールバックする）。値は短縮 ref で受理される。
       await rpc('surface.close', { surface_id: surfaceRef })
-      return listSurfaces(workspaceRef)
+      return listSurfaces()
     },
     [rpc, listSurfaces],
   )
@@ -229,21 +217,11 @@ export function useCmux() {
   const closeWorkspace = useCallback(
     async (workspaceRef: string) => {
       // cmux ソケットの workspace.close は `workspace_id` を読む（`workspace_ref` は無視）。
-      // 値は workspace.select と同じく短縮 ref を受理する（実機プローブで確認）。
       await rpc('workspace.close', { workspace_id: workspaceRef })
-      // 現在のワークスペースを閉じた場合、フォールバックが確定するまで旧 WS のタブ・
-      // ターミナル内容が残らないよう即座にクリアする（selectWorkspace と同じ理由）。
-      if (workspaceRef === currentWorkspace) {
-        setSurfaces([])
-        setCurrentSurface(null)
-        setPanes([])
-        setCurrentPane(null)
-      }
-      // listWorkspaces → resolveSelectedRef が、閉じた WS が現在だった場合は cmux が
-      // auto-select した別 WS（無ければ先頭）へ、非現在なら現在維持でフォールバックする。
-      return listWorkspaces()
+      const [, wsList] = await Promise.all([listSurfaces(), listWorkspaces()])
+      return wsList
     },
-    [rpc, listWorkspaces, currentWorkspace],
+    [rpc, listSurfaces, listWorkspaces],
   )
 
   const readText = useCallback(
@@ -302,18 +280,6 @@ export function useCmux() {
     return list
   }, [rpc])
 
-  const navigateWorkspace = useCallback(
-    async (direction: 'next' | 'prev') => {
-      if (workspaces.length === 0) return
-      const idx = workspaces.findIndex((w) => w.ref === currentWorkspace)
-      const nextIdx =
-        direction === 'next' ? (idx + 1) % workspaces.length : (idx - 1 + workspaces.length) % workspaces.length
-      const target = workspaces[nextIdx]
-      if (target) await selectWorkspace(target.ref)
-    },
-    [workspaces, currentWorkspace, selectWorkspace],
-  )
-
   const navigatePane = useCallback(
     async (direction: 'next' | 'prev') => {
       if (panes.length === 0) return
@@ -345,8 +311,12 @@ export function useCmux() {
     surfaces,
     currentSurface,
     notifications,
+    view: switcher.view,
+    feeds: switcher.feeds,
+    selectSurface,
+    initializeFrom,
+    reconcileWith,
     listWorkspaces,
-    selectWorkspace,
     createWorkspace,
     listPanes,
     listSurfaces,
@@ -360,7 +330,6 @@ export function useCmux() {
     sendKey,
     getTree,
     listNotifications,
-    navigateWorkspace,
     navigatePane,
     navigateSurface,
   }

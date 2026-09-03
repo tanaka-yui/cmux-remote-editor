@@ -27,6 +27,7 @@ const INIT_RETRY_INTERVAL = 3000
 const MIN_FONT_SIZE = 9
 const MAX_FONT_SIZE = 28
 const DEFAULT_FONT_SIZE = 13
+const FOREGROUND_STORAGE_KEY = 'cmux:foreground'
 
 export function App() {
   // テーマはトークンゲート画面でも効かせるため、token 判定より前で適用する。
@@ -58,8 +59,8 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
     surfaces,
     currentSurface,
     notifications,
+    view,
     listWorkspaces,
-    selectWorkspace,
     listPanes,
     listSurfaces,
     createSurface,
@@ -67,6 +68,8 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
     closeWorkspace,
     createWorkspace,
     focusSurface,
+    selectSurface,
+    initializeFrom,
     readText,
     readGrid,
     sendText,
@@ -115,11 +118,25 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
     let retryTimer: ReturnType<typeof setTimeout> | undefined
 
     const init = () => {
-      // panes/surfaces はここで取得しない。引数なしの listSurfaces() はサーバーが全
-      // ワークスペースの surface を返すため、他ワークスペースのタブが混入する。これらは
-      // currentWorkspace が決まってから下の effect が workspace_ref 付きで取得する。
-      listWorkspaces()
-        .then(() => listNotifications())
+      Promise.all([listWorkspaces(), listSurfaces(), listNotifications()])
+        .then(([workspaceList, surfaceList]) => {
+          if (cancelled) return
+
+          // 初回だけ、Push の workspace UUID → 前回 foreground の順で 1 ref に解決する。
+          const params = new URLSearchParams(window.location.search)
+          const workspaceId = params.get('workspace')
+          const workspace = workspaceList.find((candidate) => candidate.id === workspaceId)
+          const linkedRef = surfaceList.find((surface) => surface.workspace_ref === workspace?.ref)?.ref
+          const storedRef = sessionStorage.getItem(FOREGROUND_STORAGE_KEY)
+          const preferredRef = linkedRef ?? surfaceList.find((surface) => surface.ref === storedRef)?.ref ?? null
+          initializeFrom(surfaceList, preferredRef)
+
+          if (workspaceId !== null) {
+            params.delete('workspace')
+            const query = params.toString()
+            window.history.replaceState(null, '', window.location.pathname + (query ? `?${query}` : ''))
+          }
+        })
         .catch((err) => {
           console.error('[app] Init error:', err)
           if (!cancelled) retryTimer = setTimeout(init, INIT_RETRY_INTERVAL)
@@ -131,7 +148,7 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
       cancelled = true
       if (retryTimer) clearTimeout(retryTimer)
     }
-  }, [status, listWorkspaces, listNotifications])
+  }, [status, listWorkspaces, listSurfaces, listNotifications, initializeFrom])
 
   // 通知バッジ(Needs input / Permission)の鮮度を保つための定期ポーリング。init で 1 回だけ
   // 取得すると、cmux 側で応答して is_read が立ってもスナップショットが凍結し、応答済みの
@@ -144,9 +161,7 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
     return () => clearInterval(timer)
   }, [status, listNotifications])
 
-  // Re-fetch panes and surfaces when the (app-selected) workspace changes — always
-  // scoped to currentWorkspace so other workspaces' surfaces never leak in. Retried
-  // on transient failure so a brief cmux outage doesn't leave the tab bar empty.
+  // Re-fetch panes and the all-workspace surface snapshot when foreground workspace changes.
   useEffect(() => {
     if (status !== 'connected' || !currentWorkspace) return
 
@@ -154,7 +169,7 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
     let retryTimer: ReturnType<typeof setTimeout> | undefined
 
     const fetchWorkspace = () => {
-      Promise.all([listPanes(currentWorkspace), listSurfaces(currentWorkspace)]).catch(() => {
+      Promise.all([listPanes(currentWorkspace), listSurfaces()]).catch(() => {
         if (!cancelled) retryTimer = setTimeout(fetchWorkspace, INIT_RETRY_INTERVAL)
       })
     }
@@ -241,7 +256,7 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
           staleResyncRef.current = currentSurface
           // 再取得自体が通信不良で失敗したら、フラグを解除して次ポーリングで再挑戦できるようにする
           // （成功時は据え置き＝同一 surface でのループ防止。ポーリング成功で null にリセットされる）。
-          listSurfaces(currentWorkspace ?? undefined).catch(() => {
+          listSurfaces().catch(() => {
             if (staleResyncRef.current === currentSurface) staleResyncRef.current = null
           })
           return
@@ -272,7 +287,7 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
       window.removeEventListener('pageshow', resume)
       window.removeEventListener('focus', resume)
     }
-  }, [status, currentSurface, currentWorkspace, isBrowserSurface, historyLines, readGrid, readText, listSurfaces])
+  }, [status, currentSurface, isBrowserSurface, historyLines, readGrid, readText, listSurfaces])
 
   // Mouse mode (from the live grid's DECSET modes) gates tap/click forwarding.
   const mouseMode = deriveMouseMode(termGrid)
@@ -336,21 +351,16 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
     return () => mq.removeEventListener('change', handler)
   }, [])
 
-  // プッシュ通知タップ後の遷移。?workspace=<id>(新規ウィンドウ)と SW からの postMessage(既存
-  // ウィンドウ)の両方で、通知の workspace_id に対応するワークスペースを選択する。
+  // マウント後の Push 通知タップは購読集合を保ったまま対象サーフェスを前面化する。
   useEffect(() => {
-    if (workspaces.length === 0) return
     const navigateTo = (workspaceId: string) => {
-      const target = workspaces.find((w) => w.id === workspaceId)
-      if (target) selectWorkspace(target.ref)
-    }
-    const params = new URLSearchParams(window.location.search)
-    const wid = params.get('workspace')
-    if (wid) {
-      navigateTo(wid)
-      params.delete('workspace')
-      const qs = params.toString()
-      window.history.replaceState(null, '', window.location.pathname + (qs ? `?${qs}` : ''))
+      // Push が渡すのは UUID。Workspace.id で引く（ref では引けない）。
+      const workspace = workspaces.find((candidate) => candidate.id === workspaceId)
+      if (!workspace) return
+      const inWorkspace = surfaces.filter((surface) => surface.workspace_ref === workspace.ref)
+      const subscribed = new Set(view.subscriptions.map((subscription) => subscription.ref))
+      const target = inWorkspace.find((surface) => subscribed.has(surface.ref)) ?? inWorkspace[0]
+      if (target) selectSurface(target)
     }
     const onMessage = (e: MessageEvent) => {
       const data = (e.data ?? {}) as { type?: string; workspaceId?: string }
@@ -358,7 +368,7 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
     }
     navigator.serviceWorker?.addEventListener('message', onMessage)
     return () => navigator.serviceWorker?.removeEventListener('message', onMessage)
-  }, [workspaces, selectWorkspace])
+  }, [workspaces, surfaces, view.subscriptions, selectSurface])
 
   const currentWs = workspaces.find((w) => w.ref === currentWorkspace)
 
@@ -377,9 +387,6 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
         workspaces={workspaces}
         currentWorkspace={currentWorkspace}
         notifications={notifications}
-        onSelect={(ref) => {
-          selectWorkspace(ref)
-        }}
         onCloseWorkspace={(ref) => {
           closeWorkspace(ref).catch((err) => console.error('[app] close workspace error:', err))
         }}
@@ -416,10 +423,12 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
             focusSurface(ref)
           }}
           onClose={(ref) => {
-            closeSurface(ref, currentWorkspace ?? undefined).catch((err) => console.error('[app] close error:', err))
+            closeSurface(ref).catch((err) => console.error('[app] close error:', err))
           }}
           onCreate={() => {
-            createSurface(currentWorkspace ?? undefined).catch((err) => console.error('[app] create error:', err))
+            if (currentSurfaceInfo) {
+              createSurface(currentSurfaceInfo.workspace_id).catch((err) => console.error('[app] create error:', err))
+            }
           }}
         />
 

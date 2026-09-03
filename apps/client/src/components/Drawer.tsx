@@ -13,7 +13,6 @@ interface DrawerProps {
   workspaces: Workspace[]
   currentWorkspace: string | null
   notifications: CmuxNotification[]
-  onSelect: (id: string) => void
   onCloseWorkspace: (ref: string) => void
   onNewWorkspace: () => Promise<void>
   onClose: () => void
@@ -95,7 +94,6 @@ function WorkspaceItem({
   isCurrent,
   unreadCount,
   notification,
-  onClick,
   onRequestClose,
 }: {
   ws: Workspace
@@ -103,7 +101,6 @@ function WorkspaceItem({
   isCurrent: boolean
   unreadCount: number
   notification?: CmuxNotification
-  onClick: () => void
   onRequestClose: () => void
 }) {
   const color = ws.custom_color ?? paletteColor(index)
@@ -123,9 +120,7 @@ function WorkspaceItem({
         borderLeft: `3px solid ${isCurrent ? color || 'var(--color-accent)' : 'transparent'}`,
       }}
     >
-      <button
-        type="button"
-        onClick={onClick}
+      <div
         style={{
           display: 'flex',
           gap: 8,
@@ -137,7 +132,6 @@ function WorkspaceItem({
           color: 'var(--color-text)',
           fontSize: 12,
           textAlign: 'left',
-          cursor: 'pointer',
           alignItems: 'flex-start',
         }}
       >
@@ -227,7 +221,7 @@ function WorkspaceItem({
             {unreadCount}
           </span>
         )}
-      </button>
+      </div>
 
       {/* 閉じる: AlertDialog で確認（破壊的操作）。 */}
       <button
@@ -256,11 +250,8 @@ function WorkspaceList({
   workspaces,
   currentWorkspace,
   notifications,
-  onSelect,
   onCloseWorkspace,
-  onClose,
-  isDesktop,
-}: Omit<DrawerProps, 'open' | 'onNewWorkspace'> & { isDesktop: boolean }) {
+}: Pick<DrawerProps, 'workspaces' | 'currentWorkspace' | 'notifications' | 'onCloseWorkspace'>) {
   const unreadCounts = unreadCountByWorkspace(notifications)
   const latestNotifs = latestNotificationByWorkspace(notifications)
   // 閉じる確認の対象ワークスペース（null=ダイアログ非表示）。
@@ -277,10 +268,6 @@ function WorkspaceList({
               isCurrent={ws.ref === currentWorkspace}
               unreadCount={unreadCounts.get(ws.id) ?? 0}
               notification={latestNotifs.get(ws.id)}
-              onClick={() => {
-                onSelect(ws.ref)
-                if (!isDesktop) onClose()
-              }}
               onRequestClose={() => setClosing(ws)}
             />
           </li>
@@ -401,7 +388,6 @@ export function Drawer({
   workspaces,
   currentWorkspace,
   notifications,
-  onSelect,
   onCloseWorkspace,
   onNewWorkspace,
   onClose,
@@ -413,10 +399,7 @@ export function Drawer({
       workspaces={workspaces}
       currentWorkspace={currentWorkspace}
       notifications={notifications}
-      onSelect={onSelect}
       onCloseWorkspace={onCloseWorkspace}
-      onClose={onClose}
-      isDesktop={isDesktop}
     />
   )
 
