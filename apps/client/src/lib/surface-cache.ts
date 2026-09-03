@@ -66,11 +66,38 @@ function fitEntry(entry: CachedScreen): string | null {
     return byteLength(json) <= MAX_CACHED_ENTRY_BYTES ? json : null
   }
 
+  const fitTail = (candidate: CachedScreen, field: 'text' | 'scrollback'): string | null => {
+    const value = candidate[field]
+    if (value === undefined) return null
+
+    let lower = 0
+    let upper = value.length
+    let payload: string | null = null
+    while (lower <= upper) {
+      const retained = Math.floor((lower + upper) / 2)
+      const json = attempt({ ...candidate, [field]: value.slice(value.length - retained) })
+      if (json === null) {
+        upper = retained - 1
+      } else {
+        payload = json
+        lower = retained + 1
+      }
+    }
+    return payload
+  }
+
   const full = attempt(entry)
   if (full !== null) return full
 
-  const noScrollback = attempt({ ...entry, scrollback: undefined })
+  const trimmedScrollback = fitTail(entry, 'scrollback')
+  if (trimmedScrollback !== null) return trimmedScrollback
+
+  const withoutScrollback: CachedScreen = { ...entry, scrollback: undefined }
+  const noScrollback = attempt(withoutScrollback)
   if (noScrollback !== null) return noScrollback
+
+  const trimmedText = fitTail(withoutScrollback, 'text')
+  if (trimmedText !== null) return trimmedText
 
   return attempt({ grid: entry.grid, updatedAt: entry.updatedAt })
 }

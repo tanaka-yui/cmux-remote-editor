@@ -97,6 +97,30 @@ describe('C5 entry サイズ上限（実バイト数）', () => {
     expect((loaded?.scrollback ?? '').length).toBeLessThan(MAX_CACHED_ENTRY_BYTES)
   })
 
+  it('超過した scrollback は CJK の末尾を残して実バイト上限まで切り詰める', () => {
+    const grid: RenderGrid = { columns: 80, rows: 1, styles: [], row_spans: [] }
+    const scrollback = `${'あ'.repeat(MAX_CACHED_CHARS - 1)}終`
+    saveSurfaceScreen('surface:1', { grid, scrollback, updatedAt: 1 })
+    const loaded = loadSurfaceScreen('surface:1')
+    const raw = localStorage.getItem('cmux-surface-cache:surface:1') as string
+    expect(loaded?.grid).toEqual(grid)
+    expect(loaded?.scrollback).toBeTruthy()
+    expect(loaded?.scrollback?.endsWith('終')).toBe(true)
+    expect(loaded?.scrollback?.length).toBeLessThan(scrollback.length)
+    expect(new TextEncoder().encode(raw).length).toBeLessThanOrEqual(MAX_CACHED_ENTRY_BYTES)
+  })
+
+  it('超過した text は CJK の末尾を残して実バイト上限まで切り詰める', () => {
+    const text = `${'い'.repeat(MAX_CACHED_CHARS - 1)}終`
+    saveSurfaceScreen('surface:1', { text, updatedAt: 1 })
+    const loaded = loadSurfaceScreen('surface:1')
+    const raw = localStorage.getItem('cmux-surface-cache:surface:1') as string
+    expect(loaded?.text).toBeTruthy()
+    expect(loaded?.text?.endsWith('終')).toBe(true)
+    expect(loaded?.text?.length).toBeLessThan(text.length)
+    expect(new TextEncoder().encode(raw).length).toBeLessThanOrEqual(MAX_CACHED_ENTRY_BYTES)
+  })
+
   it('scrollback を削っても収まらなければ text も削る', () => {
     saveSurfaceScreen('surface:1', {
       text: 'y'.repeat(MAX_CACHED_ENTRY_BYTES),
