@@ -3,20 +3,22 @@ import type { ConnectionStatus } from '../hooks/useWebSocket'
 import { ConnectionIndicator } from './ConnectionIndicator'
 
 interface HeaderProps {
-  workspaceName: string | null
+  workspaceTitle: string | null
+  surfaceTitle: string | null
   onMenuToggle: () => void
   showMenuButton?: boolean
   status: ConnectionStatus
-  lastUpdated?: number | null
+  freshness: string | null
   onOpenSettings: () => void
 }
 
 export function Header({
-  workspaceName,
+  workspaceTitle,
+  surfaceTitle,
   onMenuToggle,
   showMenuButton = true,
   status,
-  lastUpdated,
+  freshness,
   onOpenSettings,
 }: HeaderProps) {
   return (
@@ -50,22 +52,34 @@ export function Header({
           <Menu size={22} />
         </button>
       )}
-      <span
+      <div
         style={{
           marginLeft: showMenuButton ? 8 : 4,
           flex: 1,
           minWidth: 0,
+          display: 'flex',
+          alignItems: 'center',
           fontSize: 15,
           fontWeight: 600,
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
           whiteSpace: 'nowrap',
         }}
       >
-        {workspaceName ?? 'cmux Remote'}
-      </span>
+        <span
+          style={{
+            flex: 1,
+            minWidth: 0,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            color: 'var(--color-text-muted)',
+          }}
+        >
+          {workspaceTitle ?? 'cmux Remote'}
+        </span>
+        {surfaceTitle && <span style={{ margin: '0 6px', color: 'var(--color-text-muted)', flexShrink: 0 }}>·</span>}
+        {surfaceTitle && <span style={{ color: 'var(--color-text)', flexShrink: 0 }}>{surfaceTitle}</span>}
+      </div>
       <div style={{ marginLeft: 8, display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-        <ConnectionIndicator status={status} lastUpdated={lastUpdated} />
+        <ConnectionIndicator status={status} freshness={freshness} />
         <button
           type="button"
           onClick={onOpenSettings}

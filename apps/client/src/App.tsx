@@ -20,6 +20,7 @@ import { loadHistoryLines, loadPushEnabled, saveHistoryLines, savePushEnabled } 
 import { loadSurfaceScreen, saveSurfaceScreen } from './lib/surface-cache'
 import { encodeKey, isAppCursorMode } from './lib/terminal-keys'
 import { getAuthToken, saveAuthToken } from './lib/token'
+import { describeFeed } from './lib/view-state'
 
 const POLL_INTERVAL = 1000
 const NOTIF_POLL_INTERVAL = 10000
@@ -83,7 +84,7 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
   const [termHistory, setTermHistory] = useState('')
   const [termGrid, setTermGrid] = useState<RenderGrid | null>(null)
   const [fontSize, setFontSize] = useState(DEFAULT_FONT_SIZE)
-  const [lastUpdated, setLastUpdated] = useState<number | null>(null)
+  const [, setLastUpdated] = useState<number | null>(null)
   // 履歴で取得する行数(設定モーダルで調整、localStorage 永続)と、設定モーダルの開閉。
   const [historyLines, setHistoryLines] = useState(loadHistoryLines)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -335,6 +336,7 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
   }, [workspaces, surfaces, view.subscriptions, selectSurface])
 
   const currentWs = workspaces.find((w) => w.ref === currentWorkspace)
+  const freshness = currentSurface ? (describeFeed(feeds.get(currentSurface))?.freshness ?? null) : null
 
   return (
     <div
@@ -351,6 +353,10 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
         workspaces={workspaces}
         currentWorkspace={currentWorkspace}
         notifications={notifications}
+        surfaces={surfaces}
+        foreground={currentSurface}
+        subscribedRefs={new Set(view.subscriptions.map((subscription) => subscription.ref))}
+        onSelectSurface={selectSurface}
         onCloseWorkspace={(ref) => {
           closeWorkspace(ref).catch((err) => console.error('[app] close workspace error:', err))
         }}
@@ -373,10 +379,11 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
         }}
       >
         <Header
-          workspaceName={currentWs?.title ?? null}
+          workspaceTitle={currentWs?.title ?? null}
+          surfaceTitle={currentSurfaceInfo?.title ?? null}
           onMenuToggle={() => setDrawerOpen((o) => !o)}
           status={status}
-          lastUpdated={lastUpdated}
+          freshness={freshness}
           onOpenSettings={() => setSettingsOpen(true)}
         />
 

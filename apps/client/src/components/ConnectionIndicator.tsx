@@ -6,15 +6,7 @@ const OFFLINE_GRACE_MS = 2000
 
 interface ConnectionIndicatorProps {
   status: ConnectionStatus
-  // 表示中の内容が取得された時刻(epoch ms)。切断中に「いつの内容か」を示す。
-  lastUpdated?: number | null
-}
-
-function formatClock(epochMs: number): string {
-  const d = new Date(epochMs)
-  const hh = String(d.getHours()).padStart(2, '0')
-  const mm = String(d.getMinutes()).padStart(2, '0')
-  return `${hh}:${mm}`
+  freshness: string | null
 }
 
 const STATUS_CONFIG: Record<ConnectionStatus, { label: string; color: string }> = {
@@ -24,27 +16,29 @@ const STATUS_CONFIG: Record<ConnectionStatus, { label: string; color: string }> 
 }
 
 // 接続状態（ドット＋ラベル）とオフラインの鮮度表示。Header の右側に置く。
-export function ConnectionIndicator({ status, lastUpdated }: ConnectionIndicatorProps) {
+export function ConnectionIndicator({ status, freshness }: ConnectionIndicatorProps) {
   // 接続済みからの一瞬の切断はチラつかせない。connected は即時、初回接続中(まだ未接続)も即時、
   // connected→切断のときだけ OFFLINE_GRACE_MS 遅延して反映する。
   const [shownStatus, setShownStatus] = useState<ConnectionStatus>(status)
+  const [shownFreshness, setShownFreshness] = useState<string | null>(freshness)
   useEffect(() => {
-    if (status === shownStatus) return
-    if (status === 'connected' || shownStatus !== 'connected') {
-      setShownStatus(status)
+    if (status === shownStatus) {
+      setShownFreshness(freshness)
       return
     }
-    const t = setTimeout(() => setShownStatus(status), OFFLINE_GRACE_MS)
+    if (status === 'connected' || shownStatus !== 'connected') {
+      setShownStatus(status)
+      setShownFreshness(freshness)
+      return
+    }
+    const t = setTimeout(() => {
+      setShownStatus(status)
+      setShownFreshness(freshness)
+    }, OFFLINE_GRACE_MS)
     return () => clearTimeout(t)
-  }, [status, shownStatus])
+  }, [freshness, status, shownStatus])
 
   const config = STATUS_CONFIG[shownStatus]
-
-  // 切断中（オフライン保持）は、表示内容がいつ時点のものかを明示する。
-  let notice: string | null = null
-  if (shownStatus !== 'connected' && lastUpdated) {
-    notice = `オフライン · 最終 ${formatClock(lastUpdated)}`
-  }
 
   return (
     <span
@@ -57,7 +51,7 @@ export function ConnectionIndicator({ status, lastUpdated }: ConnectionIndicator
         whiteSpace: 'nowrap',
       }}
     >
-      {notice && <span style={{ color: 'var(--color-warning)' }}>{notice}</span>}
+      {shownFreshness && <span style={{ color: 'var(--color-text-subtle)' }}>{shownFreshness}</span>}
       <span
         style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: config.color, display: 'inline-block' }}
       />

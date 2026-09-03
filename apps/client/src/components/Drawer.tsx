@@ -3,7 +3,7 @@ import * as Dialog from '@radix-ui/react-dialog'
 import { Plus, X } from 'lucide-react'
 import { useState } from 'react'
 
-import type { CmuxNotification, Workspace } from '../lib/cmux-rpc'
+import type { CmuxNotification, Surface, Workspace } from '../lib/cmux-rpc'
 
 const SIDEBAR_WIDTH = 220
 const DESKTOP_BREAKPOINT = 768
@@ -13,6 +13,10 @@ interface DrawerProps {
   workspaces: Workspace[]
   currentWorkspace: string | null
   notifications: CmuxNotification[]
+  surfaces: Surface[]
+  foreground: string | null
+  subscribedRefs: ReadonlySet<string>
+  onSelectSurface: (surface: Surface) => void
   onCloseWorkspace: (ref: string) => void
   onNewWorkspace: () => Promise<void>
   onClose: () => void
@@ -94,6 +98,11 @@ function WorkspaceItem({
   isCurrent,
   unreadCount,
   notification,
+  surfaces,
+  expanded,
+  subscribedRefs,
+  onToggle,
+  onSelectSurface,
   onRequestClose,
 }: {
   ws: Workspace
@@ -101,6 +110,11 @@ function WorkspaceItem({
   isCurrent: boolean
   unreadCount: number
   notification?: CmuxNotification
+  surfaces: Surface[]
+  expanded: boolean
+  subscribedRefs: ReadonlySet<string>
+  onToggle: () => void
+  onSelectSurface: (surface: Surface) => void
   onRequestClose: () => void
 }) {
   const color = ws.custom_color ?? paletteColor(index)
@@ -112,137 +126,186 @@ function WorkspaceItem({
     : null
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        alignItems: 'stretch',
-        background: isCurrent ? 'var(--color-selected)' : 'none',
-        borderLeft: `3px solid ${isCurrent ? color || 'var(--color-accent)' : 'transparent'}`,
-      }}
-    >
+    <>
       <div
         style={{
           display: 'flex',
-          gap: 8,
-          flex: 1,
-          minWidth: 0,
-          padding: '8px 10px',
-          background: 'none',
-          border: 'none',
-          color: 'var(--color-text)',
-          fontSize: 12,
-          textAlign: 'left',
-          alignItems: 'flex-start',
+          alignItems: 'stretch',
+          background: isCurrent ? 'var(--color-selected)' : 'none',
+          borderLeft: `3px solid ${isCurrent ? color || 'var(--color-accent)' : 'transparent'}`,
         }}
       >
-        <span
-          style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: color, flexShrink: 0, marginTop: 4 }}
-        />
-        <span style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
+        <button
+          type="button"
+          aria-expanded={expanded}
+          onClick={onToggle}
+          style={{
+            display: 'flex',
+            gap: 8,
+            flex: 1,
+            minWidth: 0,
+            padding: '8px 10px',
+            background: 'none',
+            border: 'none',
+            color: 'var(--color-text)',
+            fontSize: 12,
+            textAlign: 'left',
+            alignItems: 'flex-start',
+            cursor: 'pointer',
+          }}
+        >
           <span
-            style={{
-              display: 'block',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-              color: isCurrent ? 'var(--color-text)' : 'var(--color-text-muted)',
-              fontWeight: isCurrent ? 600 : 400,
-            }}
-          >
-            {ws.title || ws.ref}
-          </span>
-          {notifPreview && (
+            style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: color, flexShrink: 0, marginTop: 4 }}
+          />
+          <span style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
             <span
               style={{
                 display: 'block',
-                fontSize: 10,
-                color: 'var(--color-text-subtle)',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap',
-                marginTop: 1,
+                color: isCurrent ? 'var(--color-text)' : 'var(--color-text-muted)',
+                fontWeight: isCurrent ? 600 : 400,
               }}
             >
-              {notifPreview}
+              {ws.title || ws.ref}
             </span>
-          )}
-          {status && (
+            {notifPreview && (
+              <span
+                style={{
+                  display: 'block',
+                  fontSize: 10,
+                  color: 'var(--color-text-subtle)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  marginTop: 1,
+                }}
+              >
+                {notifPreview}
+              </span>
+            )}
+            {status && (
+              <span
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 3,
+                  fontSize: 10,
+                  color: status.color,
+                  marginTop: 2,
+                }}
+              >
+                <span style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: status.color }} />
+                {status.label}
+              </span>
+            )}
+            {folder && (
+              <span
+                style={{
+                  display: 'block',
+                  fontSize: 10,
+                  color: 'var(--color-text-subtle)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  marginTop: 1,
+                }}
+              >
+                ~/git/{folder}
+              </span>
+            )}
+          </span>
+          {unreadCount > 0 && (
             <span
               style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 3,
+                minWidth: 16,
+                height: 16,
+                borderRadius: 8,
+                backgroundColor:
+                  status?.label === 'Needs input' || status?.label === 'Permission'
+                    ? status.color
+                    : 'var(--color-danger)',
+                color: 'var(--color-accent-contrast)',
                 fontSize: 10,
-                color: status.color,
+                fontWeight: 700,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: '0 4px',
+                flexShrink: 0,
                 marginTop: 2,
               }}
             >
-              <span style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: status.color }} />
-              {status.label}
+              {unreadCount}
             </span>
           )}
-          {folder && (
-            <span
+        </button>
+        {/* 閉じる: AlertDialog で確認（破壊的操作）。 */}
+        <button
+          type="button"
+          onClick={onRequestClose}
+          aria-label="Close workspace"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            width: 44,
+            background: 'none',
+            border: 'none',
+            color: 'var(--color-text-subtle)',
+            cursor: 'pointer',
+            flexShrink: 0,
+          }}
+        >
+          <X size={18} />
+        </button>
+      </div>
+      {expanded &&
+        surfaces.map((surface) => {
+          const subscribed = surface.type !== 'browser' && subscribedRefs.has(surface.ref)
+          return (
+            <button
+              key={surface.ref}
+              type="button"
+              onClick={() => onSelectSurface(surface)}
               style={{
-                display: 'block',
-                fontSize: 10,
-                color: 'var(--color-text-subtle)',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-                marginTop: 1,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                width: '100%',
+                minWidth: 0,
+                padding: '6px 10px 6px 28px',
+                background: 'none',
+                border: 'none',
+                color: 'var(--color-text-muted)',
+                fontSize: 12,
+                textAlign: 'left',
+                cursor: 'pointer',
               }}
             >
-              ~/git/{folder}
-            </span>
-          )}
-        </span>
-        {unreadCount > 0 && (
-          <span
-            style={{
-              minWidth: 16,
-              height: 16,
-              borderRadius: 8,
-              backgroundColor:
-                status?.label === 'Needs input' || status?.label === 'Permission'
-                  ? status.color
-                  : 'var(--color-danger)',
-              color: 'var(--color-accent-contrast)',
-              fontSize: 10,
-              fontWeight: 700,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              padding: '0 4px',
-              flexShrink: 0,
-              marginTop: 2,
-            }}
-          >
-            {unreadCount}
-          </span>
-        )}
-      </div>
-
-      {/* 閉じる: AlertDialog で確認（破壊的操作）。 */}
-      <button
-        type="button"
-        onClick={onRequestClose}
-        aria-label="Close workspace"
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          width: 44,
-          background: 'none',
-          border: 'none',
-          color: 'var(--color-text-subtle)',
-          cursor: 'pointer',
-          flexShrink: 0,
-        }}
-      >
-        <X size={18} />
-      </button>
-    </div>
+              {subscribed ? (
+                <span
+                  aria-hidden="true"
+                  data-testid="live-dot"
+                  style={{
+                    width: 5,
+                    height: 5,
+                    borderRadius: '50%',
+                    backgroundColor: 'var(--color-accent)',
+                    flexShrink: 0,
+                  }}
+                />
+              ) : (
+                <span aria-hidden="true" style={{ width: 5, height: 5, flexShrink: 0 }} />
+              )}
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {surface.title}
+              </span>
+            </button>
+          )
+        })}
+    </>
   )
 }
 
@@ -250,12 +313,30 @@ function WorkspaceList({
   workspaces,
   currentWorkspace,
   notifications,
+  surfaces,
+  foreground,
+  subscribedRefs,
+  onSelectSurface,
   onCloseWorkspace,
-}: Pick<DrawerProps, 'workspaces' | 'currentWorkspace' | 'notifications' | 'onCloseWorkspace'>) {
+}: Pick<
+  DrawerProps,
+  | 'workspaces'
+  | 'currentWorkspace'
+  | 'notifications'
+  | 'surfaces'
+  | 'foreground'
+  | 'subscribedRefs'
+  | 'onSelectSurface'
+  | 'onCloseWorkspace'
+>) {
   const unreadCounts = unreadCountByWorkspace(notifications)
   const latestNotifs = latestNotificationByWorkspace(notifications)
   // 閉じる確認の対象ワークスペース（null=ダイアログ非表示）。
   const [closing, setClosing] = useState<Workspace | null>(null)
+  const [expanded, setExpanded] = useState(() => {
+    const activeSurface = surfaces.find((surface) => surface.ref === foreground)
+    return activeSurface ? new Set([activeSurface.workspace_ref]) : new Set<string>()
+  })
 
   return (
     <>
@@ -268,6 +349,18 @@ function WorkspaceList({
               isCurrent={ws.ref === currentWorkspace}
               unreadCount={unreadCounts.get(ws.id) ?? 0}
               notification={latestNotifs.get(ws.id)}
+              surfaces={surfaces.filter((surface) => surface.workspace_ref === ws.ref)}
+              expanded={expanded.has(ws.ref)}
+              subscribedRefs={subscribedRefs}
+              onToggle={() =>
+                setExpanded((current) => {
+                  const next = new Set(current)
+                  if (next.has(ws.ref)) next.delete(ws.ref)
+                  else next.add(ws.ref)
+                  return next
+                })
+              }
+              onSelectSurface={onSelectSurface}
               onRequestClose={() => setClosing(ws)}
             />
           </li>
@@ -388,6 +481,10 @@ export function Drawer({
   workspaces,
   currentWorkspace,
   notifications,
+  surfaces,
+  foreground,
+  subscribedRefs,
+  onSelectSurface,
   onCloseWorkspace,
   onNewWorkspace,
   onClose,
@@ -399,6 +496,10 @@ export function Drawer({
       workspaces={workspaces}
       currentWorkspace={currentWorkspace}
       notifications={notifications}
+      surfaces={surfaces}
+      foreground={foreground}
+      subscribedRefs={subscribedRefs}
+      onSelectSurface={onSelectSurface}
       onCloseWorkspace={onCloseWorkspace}
     />
   )
