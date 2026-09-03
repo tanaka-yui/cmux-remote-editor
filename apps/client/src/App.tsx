@@ -87,6 +87,7 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
   const pushSupported = isPushSupported()
   const [pushEnabled, setPushEnabled] = useState(loadPushEnabled)
   const topologyInitializedRef = useRef(false)
+  const [bootstrapped, setBootstrapped] = useState(false)
   const [pendingWorkspaceId, setPendingWorkspaceId] = useState<string | null>(() =>
     new URLSearchParams(window.location.search).get('workspace'),
   )
@@ -149,6 +150,7 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
     const preferredRef = linkedRef ?? surfaces.find((surface) => surface.ref === storedRef)?.ref ?? null
     setPendingWorkspaceId(null)
     initializeFrom(surfaces, preferredRef)
+    setBootstrapped(true)
   }, [topologyReady, workspaces, surfaces, pendingWorkspaceId, view.subscriptions, initializeFrom])
 
   // 前面の保存は bootstrap が選択を確定した後の非 null 値だけに限定する。
@@ -349,7 +351,19 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
             は生き残り、別タブへ切替/このタブを閉じるで復帰できる（最上位境界だと全体が畳まれ、再読み込み
             でも壊れた surface が復元され逃げ場が消える）。resetKey=foregroundRef でタブ切替時に自動回復。 */}
         <ErrorBoundary inline resetKey={foregroundRef}>
-          {foregroundRef === null ? (
+          {!bootstrapped ? (
+            <div
+              style={{
+                flex: 1,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: 'var(--color-text-muted)',
+              }}
+            >
+              読み込み中
+            </div>
+          ) : foregroundRef === null ? (
             <div
               style={{
                 flex: 1,

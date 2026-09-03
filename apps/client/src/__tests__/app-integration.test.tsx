@@ -104,6 +104,28 @@ beforeEach(() => {
 })
 
 describe('App 結合 — topology 再取得と bootstrap (D2.1)', () => {
+  it('topology RPC の待機中は空状態を出さず、空 snapshot の bootstrap 後だけ「端末がありません」を出す', async () => {
+    emptyTopology()
+    ws.hold.add('surface.list')
+
+    render(<App />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(screen.getByText('読み込み中')).toBeTruthy()
+    expect(screen.queryByText('端末がありません')).toBeNull()
+
+    await act(async () => {
+      releaseHeld('surface.list')
+      await Promise.resolve()
+    })
+
+    expect(await screen.findByText('端末がありません')).toBeTruthy()
+    expect(screen.queryByText('読み込み中')).toBeNull()
+  })
+
   it('マウントして接続したとき surface.list / workspace.list はそれぞれ 1 本だけ', async () => {
     emptyTopology()
     ws.hold.add('surface.list')
@@ -404,5 +426,56 @@ describe('App 結合 — マウント後の Push 通知ジャンプ', () => {
     })
 
     expect(screen.getByRole('tab', { name: /Initial Workspace \/ initial/, selected: true })).toBeTruthy()
+  })
+})
+
+describe('App 結合 — 実 Terminal の feed 描画', () => {
+  it('replay の grid と read_text の履歴を実 Terminal に渡して縦積み描画する', async () => {
+    ws.responses['surface.list'] = {
+      surfaces: [
+        {
+          index: 0,
+          ref: 'surface:1',
+          selected: true,
+          title: 'terminal',
+          type: 'terminal',
+          workspace_ref: 'workspace:1',
+          workspace_title: 'Terminal Workspace',
+          workspace_id: 'W1',
+        },
+      ],
+    }
+    ws.responses['workspace.list'] = {
+      workspaces: [{ id: 'W1', ref: 'workspace:1', title: 'Terminal Workspace', index: 0 }],
+    }
+    ws.responses['notification.list'] = { notifications: [] }
+    ws.responses['terminal.replay'] = {
+      render_grid: {
+        columns: 80,
+        rows: 24,
+        styles: [],
+        row_spans: [{ row: 0, column: 0, style_id: 0, cell_width: 9, text: 'live-grid' }],
+      },
+    }
+    ws.responses['surface.read_text'] = { text: 'history-line\nlive-grid' }
+
+    const { container } = render(<App />)
+
+    const history = await screen.findByText('history-line')
+    const wterm = container.querySelector<HTMLElement>('.wterm')
+    expect(history.tagName).toBe('PRE')
+    expect(wterm).not.toBeNull()
+    expect(wterm?.style.display).not.toBe('none')
+    expect(history.nextElementSibling).toBe(wterm)
+    expect(
+      sentRequests().some(
+        (request) => request.method === 'terminal.replay' && request.params.surface_id === 'surface:1',
+      ),
+    ).toBe(true)
+    expect(
+      sentRequests().some(
+        (request) => request.method === 'surface.read_text' && request.params.surface_id === 'surface:1',
+      ),
+    ).toBe(true)
   })
 })
