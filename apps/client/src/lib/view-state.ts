@@ -2,6 +2,9 @@
 // 前面(foreground)と購読集合(subscriptions)を別々に更新すると「前面が購読集合の外を
 // 指す」状態を作れてしまうため、1 つの値と 4 つの遷移関数に閉じ込める。
 
+import type { RenderGrid } from './render-grid'
+import type { CachedScreen } from './surface-cache'
+
 export const MAX_LIVE_SUBSCRIPTIONS = 8
 export const MAX_RETAINED_FEEDS = 24
 export const FOREGROUND_POLL_INTERVAL = 1000
@@ -146,4 +149,130 @@ export function pollPlan(
       ref: s.ref,
       intervalMs: visible.has(s.ref) ? FOREGROUND_POLL_INTERVAL : BACKGROUND_POLL_INTERVAL,
     }))
+}
+
+export type FeedStatus = 'live' | 'warming' | 'loading' | 'error'
+
+export type FeedSource = 'memory' | 'cache' | 'none'
+
+export interface TerminalFeed {
+  grid: RenderGrid | null
+  history: string
+  updatedAt: number | null
+  activity: boolean
+  // カーソル点滅を内容の変化とみなさないよう、row_spans だけをハッシュする（spec §10 R4）。
+  contentHash: string
+  status: FeedStatus
+  source: FeedSource
+  epoch: number
+  promotedAt: number
+}
+
+export function describeFeed(
+  feed: TerminalFeed | undefined,
+): { kind: 'grid'; freshness: string | null } | { kind: 'message'; message: string; freshness: string | null } | null {
+  if (!feed) return null
+  const hhmmss = (time: number) => new Date(time).toTimeString().slice(0, 8)
+  const hhmm = (time: number) => new Date(time).toTimeString().slice(0, 5)
+
+  if (feed.status === 'error') {
+    const freshness = feed.updatedAt === null ? '接続なし' : `接続なし · 最終 ${hhmm(feed.updatedAt)}`
+    return feed.source === 'none' ? { kind: 'message', message: '接続なし', freshness } : { kind: 'grid', freshness }
+  }
+  if (feed.source === 'none') {
+    return feed.status === 'live'
+      ? { kind: 'message', message: '表示できる内容がありません（端末が停止しています）', freshness: null }
+      : { kind: 'message', message: '読み込み中', freshness: null }
+  }
+  if (feed.status === 'live') return { kind: 'grid', freshness: null }
+  if (feed.source === 'cache') {
+    return { kind: 'grid', freshness: `オフライン時点の内容 · 最終 ${hhmm(feed.updatedAt ?? 0)}` }
+  }
+  return { kind: 'grid', freshness: `更新: ${hhmmss(feed.updatedAt ?? 0)}` }
+}
+
+export interface SwitcherState {
+  view: ViewState
+  feeds: Map<string, TerminalFeed>
+}
+
+export type SwitcherAction =
+  | { type: 'select'; surface: SurfaceLike; now: number; cap: number }
+  | { type: 'initialize'; surfaces: readonly SurfaceLike[]; preferredRef: string | null; now: number }
+  | { type: 'reconcile'; surfaces: readonly SurfaceLike[]; now: number }
+
+// F1〜F3。昇格ごとに epoch を進め、論理的な source で排他的に分岐する。
+function promote(
+  feeds: ReadonlyMap<string, TerminalFeed>,
+  ref: string,
+  now: number,
+  readCache: (ref: string) => CachedScreen | null,
+): TerminalFeed {
+  const prev = feeds.get(ref)
+  const base = { epoch: (prev?.epoch ?? 0) + 1, promotedAt: now, activity: false }
+
+  if (prev?.source === 'memory') return { ...prev, ...base, status: 'warming' }
+  if (prev?.source === 'cache') return { ...prev, ...base, status: 'warming' }
+  if (!prev) {
+    const cached = readCache(ref)
+    if (cached && (cached.grid || cached.scrollback || cached.text)) {
+      return {
+        ...base,
+        grid: cached.grid ?? null,
+        history: cached.scrollback ?? cached.text ?? '',
+        updatedAt: cached.updatedAt,
+        contentHash: cached.grid === undefined ? '' : JSON.stringify(cached.grid.row_spans),
+        status: 'warming',
+        source: 'cache',
+      }
+    }
+  }
+  return {
+    ...base,
+    grid: null,
+    history: '',
+    updatedAt: prev?.updatedAt ?? null,
+    contentHash: '',
+    status: 'loading',
+    source: 'none',
+  }
+}
+
+// D3.2 の保持上限。購読中の feed と前面の feed は退避対象外にする。
+function retain(feeds: Map<string, TerminalFeed>, view: ViewState): Map<string, TerminalFeed> {
+  if (feeds.size <= MAX_RETAINED_FEEDS) return feeds
+  const subscribed = new Set(view.subscriptions.map((subscription) => subscription.ref))
+  const evictable = [...feeds.entries()]
+    .filter(([ref]) => !subscribed.has(ref) && ref !== view.foreground)
+    .sort((left, right) => left[1].promotedAt - right[1].promotedAt)
+  const retained = new Map(feeds)
+  for (const [ref] of evictable) {
+    if (retained.size <= MAX_RETAINED_FEEDS) break
+    retained.delete(ref)
+  }
+  return retained
+}
+
+export function createSwitcherReducer(
+  readCache: (ref: string) => CachedScreen | null,
+): (state: SwitcherState, action: SwitcherAction) => SwitcherState {
+  return (state, action) => {
+    const nextView =
+      action.type === 'select'
+        ? focus(state.view, action.surface, action.now, action.cap)
+        : action.type === 'initialize'
+          ? initialize(action.surfaces, action.preferredRef, action.now)
+          : reconcile(state.view, action.surfaces, action.now)
+
+    // F1〜F3 は、この action で subscriptions に新しく加わった ref だけに適用する。
+    const previousRefs = new Set(state.view.subscriptions.map((subscription) => subscription.ref))
+    const addedRefs = nextView.subscriptions
+      .map((subscription) => subscription.ref)
+      .filter((ref) => !previousRefs.has(ref))
+    if (addedRefs.length === 0) return { view: nextView, feeds: state.feeds }
+
+    const feeds = new Map(state.feeds)
+    for (const ref of addedRefs) feeds.set(ref, promote(state.feeds, ref, action.now, readCache))
+    return { view: nextView, feeds: retain(feeds, nextView) }
+  }
 }

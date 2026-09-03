@@ -1,12 +1,17 @@
 import { describe, expect, it } from 'vitest'
-
+import type { RenderGrid } from '../render-grid'
+import type { CachedScreen } from '../surface-cache'
 import {
+  createSwitcherReducer,
   focus,
   initialize,
   MAX_LIVE_SUBSCRIPTIONS,
+  MAX_RETAINED_FEEDS,
   pollPlan,
   reconcile,
   type SurfaceLike,
+  type SwitcherState,
+  type TerminalFeed,
   type ViewState,
 } from '../view-state'
 
@@ -23,6 +28,21 @@ const browser = (ref: string, ws = 'workspace:1', index?: number): SurfaceLike =
   type: 'browser',
   workspace_ref: ws,
   index: index ?? Number(ref.split(':')[1] ?? 0),
+})
+
+const grid = (text: string): RenderGrid => ({
+  columns: 80,
+  rows: 1,
+  styles: [],
+  row_spans: [{ row: 0, column: 0, style_id: 0, cell_width: text.length, text }],
+})
+
+const noCache = () => null
+const withCache = (refs: Record<string, CachedScreen>) => (ref: string) => refs[ref] ?? null
+
+const emptyState = (): SwitcherState => ({
+  view: { subscriptions: [], foreground: null, foregroundWorkspaceRef: null },
+  feeds: new Map(),
 })
 
 // 不変条件は各テストの末尾で必ず呼ぶ。
@@ -290,5 +310,154 @@ describe('pollPlan', () => {
     state = focus(state, surfaces[1] as SurfaceLike, 2000, MAX_LIVE_SUBSCRIPTIONS)
     const plan = pollPlan(state, surfaces, ['surface:1', 'surface:2'])
     expect(plan.every((p) => p.intervalMs === 1000)).toBe(true)
+  })
+})
+
+describe('createSwitcherReducer — added 規則', () => {
+  it('非購読 terminal を選ぶと F3（feed も cache も無い）', () => {
+    const reduce = createSwitcherReducer(noCache)
+    const surfaces = [term('surface:1')]
+    const s = reduce(emptyState(), { type: 'initialize', surfaces, preferredRef: null, now: 1000 })
+    const feed = s.feeds.get('surface:1') as TerminalFeed
+    expect(feed.status).toBe('loading')
+    expect(feed.source).toBe('none')
+    expect(feed.epoch).toBe(1)
+    expect(feed.promotedAt).toBe(1000)
+  })
+
+  it('cache があれば F2（warming/cache）', () => {
+    const reduce = createSwitcherReducer(withCache({ 'surface:1': { grid: grid('x'), updatedAt: 500 } }))
+    const surfaces = [term('surface:1')]
+    const s = reduce(emptyState(), { type: 'initialize', surfaces, preferredRef: null, now: 1000 })
+    const feed = s.feeds.get('surface:1') as TerminalFeed
+    expect(feed.status).toBe('warming')
+    expect(feed.source).toBe('cache')
+    expect(feed.grid).not.toBeNull()
+  })
+
+  it('F4: すでに live/memory の購読中 terminal を前面化しても feeds と epoch が不変', () => {
+    const reduce = createSwitcherReducer(noCache)
+    const surfaces = [term('surface:1'), term('surface:2')]
+    let s = reduce(emptyState(), { type: 'initialize', surfaces, preferredRef: 'surface:1', now: 1000 })
+    s = reduce(s, {
+      type: 'select',
+      surface: surfaces[1] as SurfaceLike,
+      now: 2000,
+      cap: MAX_LIVE_SUBSCRIPTIONS,
+    })
+    const live: TerminalFeed = {
+      ...(s.feeds.get('surface:1') as TerminalFeed),
+      status: 'live',
+      source: 'memory',
+      grid: grid('a'),
+    }
+    s = { ...s, feeds: new Map(s.feeds).set('surface:1', live) }
+    const before = s.feeds
+    const after = reduce(s, {
+      type: 'select',
+      surface: surfaces[0] as SurfaceLike,
+      now: 3000,
+      cap: MAX_LIVE_SUBSCRIPTIONS,
+    })
+    expect(after.feeds.get('surface:1')).toEqual(live)
+    expect(after.feeds).toBe(before)
+    expect(after.view.foreground).toBe('surface:1')
+  })
+
+  it('D5: browser を前面化しても feeds が不変', () => {
+    const reduce = createSwitcherReducer(noCache)
+    const surfaces = [term('surface:1'), browser('surface:9')]
+    let s = reduce(emptyState(), { type: 'initialize', surfaces, preferredRef: 'surface:1', now: 1000 })
+    const before = s.feeds
+    s = reduce(s, {
+      type: 'select',
+      surface: surfaces[1] as SurfaceLike,
+      now: 2000,
+      cap: MAX_LIVE_SUBSCRIPTIONS,
+    })
+    expect(s.feeds).toBe(before)
+    expect(s.view.foreground).toBe('surface:9')
+  })
+
+  it('reconcile が購読を削るだけのときは feeds が不変', () => {
+    const reduce = createSwitcherReducer(noCache)
+    const surfaces = [term('surface:1'), term('surface:2')]
+    let s = reduce(emptyState(), { type: 'initialize', surfaces, preferredRef: 'surface:1', now: 1000 })
+    s = reduce(s, {
+      type: 'select',
+      surface: surfaces[1] as SurfaceLike,
+      now: 2000,
+      cap: MAX_LIVE_SUBSCRIPTIONS,
+    })
+    const before = s.feeds
+    s = reduce(s, { type: 'reconcile', surfaces: [term('surface:1')], now: 3000 })
+    expect(s.feeds).toBe(before)
+  })
+
+  it('reconcile が空の購読集合へ退避先 terminal を足すときは F1〜F3 が適用される', () => {
+    const reduce = createSwitcherReducer(noCache)
+    const before = [term('surface:2', 'workspace:26')]
+    let s = reduce(emptyState(), { type: 'initialize', surfaces: before, preferredRef: 'surface:2', now: 1000 })
+    const after = [term('surface:3', 'workspace:26')]
+    s = reduce(s, { type: 'reconcile', surfaces: after, now: 2000 })
+    const feed = s.feeds.get('surface:3') as TerminalFeed
+    expect(feed).toBeDefined()
+    expect(feed.status).toBe('loading')
+    expect(feed.promotedAt).toBe(2000)
+  })
+
+  it('F2 -> F10 -> 再昇格 で source が cache のまま維持される（memory に化けない）', () => {
+    const reduce = createSwitcherReducer(withCache({ 'surface:1': { grid: grid('x'), updatedAt: 500 } }))
+    const surfaces = [term('surface:1'), term('surface:2'), term('surface:3')]
+    let s = reduce(emptyState(), { type: 'initialize', surfaces, preferredRef: 'surface:1', now: 1000 })
+    expect((s.feeds.get('surface:1') as TerminalFeed).source).toBe('cache')
+    s = reduce(s, { type: 'select', surface: surfaces[1] as SurfaceLike, now: 2000, cap: 1 })
+    expect(s.view.subscriptions.map((x) => x.ref)).toEqual(['surface:2'])
+    expect((s.feeds.get('surface:1') as TerminalFeed).source).toBe('cache')
+    const epochBefore = (s.feeds.get('surface:1') as TerminalFeed).epoch
+    s = reduce(s, { type: 'select', surface: surfaces[0] as SurfaceLike, now: 3000, cap: 1 })
+    const feed = s.feeds.get('surface:1') as TerminalFeed
+    expect(feed.source).toBe('cache')
+    expect(feed.status).toBe('warming')
+    expect(feed.epoch).toBe(epochBefore + 1)
+    expect(feed.promotedAt).toBe(3000)
+  })
+
+  it('F5n 後（source=none）の再昇格は、cache が残っていても F3 に入る', () => {
+    const reduce = createSwitcherReducer(withCache({ 'surface:1': { grid: grid('x'), updatedAt: 500 } }))
+    const surfaces = [term('surface:1'), term('surface:2')]
+    let s = reduce(emptyState(), { type: 'initialize', surfaces, preferredRef: 'surface:1', now: 1000 })
+    const stopped: TerminalFeed = {
+      ...(s.feeds.get('surface:1') as TerminalFeed),
+      status: 'live',
+      source: 'none',
+      grid: null,
+      history: '',
+    }
+    s = { ...s, feeds: new Map(s.feeds).set('surface:1', stopped) }
+    s = reduce(s, { type: 'select', surface: surfaces[1] as SurfaceLike, now: 2000, cap: 1 })
+    s = reduce(s, { type: 'select', surface: surfaces[0] as SurfaceLike, now: 3000, cap: 1 })
+    const feed = s.feeds.get('surface:1') as TerminalFeed
+    expect(feed.status).toBe('loading')
+    expect(feed.source).toBe('none')
+    expect(feed.grid).toBeNull()
+  })
+
+  it('MAX_RETAINED_FEEDS を超えたら LRU 退避するが、購読中の feed は退避対象外', () => {
+    const reduce = createSwitcherReducer(noCache)
+    const surfaces = Array.from({ length: MAX_RETAINED_FEEDS + 5 }, (_, i) => term(`surface:${i}`))
+    let s = reduce(emptyState(), { type: 'initialize', surfaces, preferredRef: 'surface:0', now: 1000 })
+    for (let i = 1; i < surfaces.length; i++) {
+      s = reduce(s, {
+        type: 'select',
+        surface: surfaces[i] as SurfaceLike,
+        now: 1000 + i,
+        cap: MAX_LIVE_SUBSCRIPTIONS,
+      })
+    }
+    expect(s.feeds.size).toBeLessThanOrEqual(MAX_RETAINED_FEEDS)
+    for (const sub of s.view.subscriptions) {
+      expect(s.feeds.has(sub.ref)).toBe(true)
+    }
   })
 })
