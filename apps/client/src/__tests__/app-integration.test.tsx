@@ -430,7 +430,7 @@ describe('App 結合 — マウント後の Push 通知ジャンプ', () => {
 })
 
 describe('App 結合 — 実 Terminal の feed 描画', () => {
-  it('replay の grid と read_text の履歴を実 Terminal に渡して縦積み描画する', async () => {
+  it('replay の grid 内容と read_text の履歴を実 Terminal に渡して縦積み描画する', async () => {
     ws.responses['surface.list'] = {
       surfaces: [
         {
@@ -464,9 +464,11 @@ describe('App 結合 — 実 Terminal の feed 描画', () => {
     const history = await screen.findByText('history-line')
     const wterm = container.querySelector<HTMLElement>('.wterm')
     expect(history.tagName).toBe('PRE')
-    expect(wterm).not.toBeNull()
-    expect(wterm?.style.display).not.toBe('none')
+    expect(history.textContent).toBe('history-line')
+    if (!wterm) throw new Error('実 Terminal がマウントされていません')
+    expect(wterm.style.display).not.toBe('none')
     expect(history.nextElementSibling).toBe(wterm)
+    await waitFor(() => expect(wterm.querySelector('.term-grid')?.textContent).toContain('live-grid'))
     expect(
       sentRequests().some(
         (request) => request.method === 'terminal.replay' && request.params.surface_id === 'surface:1',
