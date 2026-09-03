@@ -3,6 +3,7 @@ import { act, render, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { App } from '../App'
+import type { TerminalFeed } from '../lib/view-state'
 
 interface WorkspaceStub {
   id: string
@@ -32,6 +33,7 @@ interface CmuxStateStub {
   currentSurface: string | null
   notifications: never[]
   view: { subscriptions: { ref: string }[] }
+  feeds: ReadonlyMap<string, TerminalFeed>
   listWorkspaces: () => Promise<WorkspaceStub[]>
   listPanes: () => Promise<never[]>
   listSurfaces: (ref?: string) => Promise<SurfaceStub[]>
@@ -106,6 +108,7 @@ beforeEach(() => {
     currentSurface: null,
     notifications: [],
     view: { subscriptions: [] },
+    feeds: new Map(),
     listWorkspaces: vi.fn(() =>
       Promise.resolve([{ id: 'w1', ref: 'workspace:A', title: 'A', index: 0, selected: true }]),
     ),

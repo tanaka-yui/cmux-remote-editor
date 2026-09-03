@@ -1,11 +1,16 @@
 import { Plus, X } from 'lucide-react'
+import { useEffect, useRef } from 'react'
 
 import type { Surface } from '../lib/cmux-rpc'
+import type { TerminalFeed } from '../lib/view-state'
 
 interface TabBarProps {
   surfaces: Surface[]
-  currentSurface: string | null
-  onSelect: (ref: string) => void
+  foreground: string | null
+  subscribedRefs: ReadonlySet<string>
+  feeds: ReadonlyMap<string, TerminalFeed>
+  workspaceColor: (workspaceRef: string) => string
+  onSelect: (surface: Surface) => void
   onClose: (ref: string) => void
   onCreate: () => void
 }
@@ -15,9 +20,32 @@ function shortTitle(title: string): string {
   return title.replace(/^\[\d+\]\s*/, '').trim() || title
 }
 
-export function TabBar({ surfaces, currentSurface, onSelect, onClose, onCreate }: TabBarProps) {
+function tabLabel(surface: Surface, subscribed: boolean): string {
+  const name = `${surface.workspace_title} / ${shortTitle(surface.title)}`
+  if (surface.type === 'browser') return `${name}、browser、購読対象外`
+  return `${name}、${subscribed ? 'ライブ購読中' : '未購読'}`
+}
+
+export function TabBar({
+  surfaces,
+  foreground,
+  subscribedRefs,
+  feeds,
+  workspaceColor,
+  onSelect,
+  onClose,
+  onCreate,
+}: TabBarProps) {
+  const activeRef = useRef<HTMLDivElement | null>(null)
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 前面 ref の変化を 1 箇所で拾ってスクロールする。
+  useEffect(() => {
+    activeRef.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  }, [foreground])
+
   return (
     <div
+      role="tablist"
       style={{
         display: 'flex',
         alignItems: 'stretch',
@@ -28,13 +56,32 @@ export function TabBar({ surfaces, currentSurface, onSelect, onClose, onCreate }
         overflowX: 'auto',
       }}
     >
-      {surfaces.map((surface, i) => {
-        const active = surface.ref === currentSurface
-        // Mark the first tab of a new split pane to visually separate groups.
-        const newPaneGroup = i > 0 && surface.pane_ref !== surfaces[i - 1]?.pane_ref
+      {surfaces.map((surface, index) => {
+        const active = surface.ref === foreground
+        const subscribed = surface.type !== 'browser' && subscribedRefs.has(surface.ref)
+        const feed = feeds.get(surface.ref)
+        const isError = feed?.status === 'error'
+        const startsWorkspace = index > 0 && surface.workspace_ref !== surfaces[index - 1]?.workspace_ref
+        const liveDotSize = feed?.activity ? 6 : 5
+        const titleColor = isError
+          ? 'var(--color-text-subtle)'
+          : subscribed
+            ? 'var(--color-text)'
+            : 'var(--color-text-muted)'
+
         return (
           <div
             key={surface.ref}
+            ref={active ? activeRef : null}
+            role="tab"
+            aria-label={tabLabel(surface, subscribed)}
+            aria-selected={active}
+            data-ref={surface.ref}
+            tabIndex={0}
+            onClick={() => onSelect(surface)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') onSelect(surface)
+            }}
             style={{
               display: 'flex',
               alignItems: 'center',
@@ -42,23 +89,27 @@ export function TabBar({ surfaces, currentSurface, onSelect, onClose, onCreate }
               padding: '0 10px',
               maxWidth: 180,
               borderRight: '1px solid var(--color-border)',
-              borderLeft: newPaneGroup ? '2px solid var(--color-tab-group-border)' : undefined,
+              borderLeft: startsWorkspace ? '2px solid var(--color-tab-group-border)' : undefined,
               backgroundColor: active ? 'var(--color-bg)' : 'transparent',
               borderBottom: active ? '2px solid var(--color-accent)' : '2px solid transparent',
               cursor: 'pointer',
               whiteSpace: 'nowrap',
             }}
           >
-            <button
-              type="button"
-              onClick={() => onSelect(surface.ref)}
+            <span
+              aria-hidden="true"
               style={{
-                background: 'none',
-                border: 'none',
-                color: active ? 'var(--color-text)' : 'var(--color-text-muted)',
+                width: 4,
+                height: 4,
+                borderRadius: '50%',
+                backgroundColor: workspaceColor(surface.workspace_ref),
+                flexShrink: 0,
+              }}
+            />
+            <span
+              style={{
+                color: titleColor,
                 fontSize: 13,
-                padding: 0,
-                cursor: 'pointer',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap',
@@ -66,10 +117,26 @@ export function TabBar({ surfaces, currentSurface, onSelect, onClose, onCreate }
               }}
             >
               {shortTitle(surface.title)}
-            </button>
+            </span>
+            {subscribed ? (
+              <span
+                aria-hidden="true"
+                data-testid="live-dot"
+                style={{
+                  width: liveDotSize,
+                  height: liveDotSize,
+                  borderRadius: '50%',
+                  backgroundColor: isError ? 'var(--color-warning)' : 'var(--color-accent)',
+                  flexShrink: 0,
+                }}
+              />
+            ) : null}
             <button
               type="button"
-              onClick={() => onClose(surface.ref)}
+              onClick={(event) => {
+                event.stopPropagation()
+                onClose(surface.ref)
+              }}
               aria-label="Close tab"
               style={{
                 background: 'none',

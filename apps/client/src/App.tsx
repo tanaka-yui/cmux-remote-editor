@@ -60,11 +60,11 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
     currentSurface,
     notifications,
     view,
+    feeds,
     createSurface,
     closeSurface,
     closeWorkspace,
     createWorkspace,
-    focusSurface,
     selectSurface,
     initializeFrom,
     requestTopologyRefresh,
@@ -382,10 +382,13 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
 
         <TabBar
           surfaces={surfaces}
-          currentSurface={currentSurface}
-          onSelect={(ref) => {
-            focusSurface(ref)
-          }}
+          foreground={currentSurface}
+          subscribedRefs={new Set(view.subscriptions.map((subscription) => subscription.ref))}
+          feeds={feeds}
+          workspaceColor={(workspaceRef) =>
+            workspaces.find((workspace) => workspace.ref === workspaceRef)?.custom_color ?? 'var(--color-text-muted)'
+          }
+          onSelect={selectSurface}
           onClose={(ref) => {
             closeSurface(ref).catch((err) => console.error('[app] close error:', err))
           }}
