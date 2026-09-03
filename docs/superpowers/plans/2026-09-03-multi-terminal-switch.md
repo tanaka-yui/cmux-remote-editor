@@ -28,6 +28,22 @@
   TOPOLOGY_POLL_INTERVAL   = 5000
   MAX_CACHED_SURFACES      = 12
   ```
+- **`RenderGrid` の実型**（`lib/render-grid.ts:42-50`）。**`lines` も `cols` も無い**:
+  ```ts
+  interface RenderGrid {
+    columns: number
+    rows: number
+    styles: RenderStyle[]
+    row_spans: RowSpan[]   // { row, column, style_id, cell_width, text }
+    cursor?: GridCursor
+    active_screen?: string
+    modes?: TerminalMode[]
+  }
+  ```
+  テストの fixture は既存 `lib/__tests__/render-grid.test.ts:23-25` の `grid()` ヘルパーと同じ形
+  （`{ columns: 10, rows: 2, styles: [], row_spans: [], ...over }`）にする。
+  **内容の同一性は `row_spans` で判定する**（`cursor` は別フィールドなので、
+  `row_spans` だけをハッシュすれば R4 の「カーソル点滅を変化と見なさない」が自動的に満たされる）。
 - **新しい CSS 色トークンを追加しない。** 既存の `--color-accent` / `--color-text-muted` / `--color-text-subtle` / `--color-warning` / `--color-tab-group-border` だけで表現する。
 - **ターミナル描画は不可侵**: `components/Terminal.tsx` の描画ロジック、`lib/render-grid.ts`、`--term-*` 変数、ビューポートのダーク固定には触れない。`Terminal` に渡す props の形だけが変わる。
 - **縦の余白を増やさない**: Header 44 / TabBar 38 / InputBar の高さは現行のまま。
@@ -37,6 +53,34 @@
   ```
   Claude-Session: https://claude.ai/code/session_01WNHHFenLzMSWFXCYGtWxsp
   ```
+
+### レビューの到達点（記録）
+
+この plan は design review（codex / gpt-5.6-sol / xhigh）を **point=plan で 5 ラウンド**受けた。
+これが運用上の上限である。
+
+| round | 対象 | 結果 |
+|---|---|---|
+| 1 | `26accf1` | needs_work（P1 3 / P2 3） |
+| 2 | `b50e345` | needs_work（P1 5 / P2 4） |
+| 3 | `811ddb7` | needs_work（P1 5 / P2 3） |
+| 4 | `f21e30e` | needs_work（P1 4 / P2 5） |
+| 5 | `6abea96` | needs_work（P1 4 / P2 3） |
+
+**round 5 の指摘 4 件（P1）も反映済みだが、その反映自体はレビューを受けていない。**
+上限に達したため round 6 は行わない。とくに次の 4 点は**実装時の最初の検証対象**にすること。
+
+1. `RenderGrid` の実型（`columns` / `row_spans`。`lines` も `cols` も無い）に全 fixture を揃える。
+   activity のハッシュは `row_spans` のみ（`cursor` は別フィールドなので自動的に除かれる）
+2. 「retained memory の再昇格」テストは `applyFeedResult` が公開される **Task 8** に置く
+   （Task 6 の時点では型が通らない）
+3. App レベルの受入テストは新規 `src/__tests__/app-integration.test.tsx`（`useCmux` を mock しない）
+   に置く。既存の `useCmux.test.ts`（`.ts` で JSX 不可）にも `App.test.tsx`（`useCmux` を全面 mock）にも
+   入らない
+4. bootstrap の境界は `topologyReady`（最初の snapshot を適用したか）であって配列長ではない。
+   成功した空 snapshot は正規状態であり、bootstrap を完了させて「端末がありません」を描く
+
+spec 側も 5 ラウンドで打ち切っている（spec §10 の「レビューの到達点」）。
 
 ### plan が spec を supersede する箇所
 
@@ -1056,7 +1100,7 @@ EOF
   export type FeedSource = 'memory' | 'cache' | 'none'
   export interface TerminalFeed {
     grid: RenderGrid | null; history: string; updatedAt: number | null
-    activity: boolean; linesHash: string
+    activity: boolean; contentHash: string
     status: FeedStatus; source: FeedSource; epoch: number; promotedAt: number
   }
   export function describeFeed(feed: TerminalFeed | undefined):
@@ -1093,7 +1137,14 @@ import { createSwitcherReducer, type SwitcherState, type TerminalFeed } from '..
 import type { CachedScreen } from '../surface-cache'
 import type { RenderGrid } from '../render-grid'
 
-const grid = (text: string): RenderGrid => ({ rows: 1, cols: text.length, lines: [], active_screen: 'primary' } as RenderGrid)
+// 実型に合わせる（lib/__tests__/render-grid.test.ts:23-25 の grid() と同じ形）。
+const grid = (text: string): RenderGrid => ({
+  columns: 80,
+  rows: 1,
+  styles: [],
+  row_spans: [{ row: 0, column: 0, style_id: 0, cell_width: text.length, text }],
+  active_screen: 'primary',
+})
 
 const noCache = () => null
 const withCache = (refs: Record<string, CachedScreen>) => (ref: string) => refs[ref] ?? null
@@ -1256,9 +1307,9 @@ export interface TerminalFeed {
   history: string
   updatedAt: number | null
   activity: boolean       // 前面を離れてから内容が変化した（タブのドット拡大に使う）
-  // activity 判定用。cursor を除いた lines だけをハッシュする（カーソル点滅だけで
-  // 「変化した」と見なさないため。spec §10 R4）。
-  linesHash: string
+  // activity 判定用。row_spans だけをハッシュする。cursor は別フィールドなので、
+  // これだけでカーソル点滅を変化と見なさない条件が満たされる（spec §10 R4）。
+  contentHash: string
   status: FeedStatus
   source: FeedSource      // 表示ケースは (status, source) の組で決まる（D3.1）
   epoch: number           // 昇格ごとに単調増加。応答の適用可否判定に使う
@@ -1342,7 +1393,7 @@ function promote(
         grid: cached.grid ?? null,
         history: cached.scrollback ?? cached.text ?? '',
         updatedAt: cached.updatedAt,
-        linesHash: cached.grid === undefined ? '' : JSON.stringify(cached.grid.lines),
+        contentHash: cached.grid === undefined ? '' : JSON.stringify(cached.grid.row_spans),
         status: 'warming',
         source: 'cache',
       }
@@ -1354,7 +1405,7 @@ function promote(
     grid: null,
     history: '',
     updatedAt: prev?.updatedAt ?? null,
-    linesHash: '',
+    contentHash: '',
     status: 'loading',
     source: 'none',
   }
@@ -1483,7 +1534,7 @@ describe('C5 entry サイズ上限（実バイト数）', () => {
     saveSurfaceScreen('surface:1', {
       text: 'y'.repeat(MAX_CACHED_ENTRY_BYTES),
       scrollback: 'x'.repeat(MAX_CACHED_ENTRY_BYTES),
-      grid: { rows: 1, cols: 1, lines: [] } as RenderGrid,
+      grid: { columns: 80, rows: 1, styles: [], row_spans: [] } as RenderGrid,
       updatedAt: 1,
     })
     const loaded = loadSurfaceScreen('surface:1')
@@ -1493,7 +1544,7 @@ describe('C5 entry サイズ上限（実バイト数）', () => {
   })
 
   it('grid だけでも超えるならその entry は保存しない', () => {
-    const huge = { rows: 1, cols: 1, lines: [{ spans: [{ text: 'z'.repeat(MAX_CACHED_ENTRY_BYTES) }] }] } as RenderGrid
+    const huge: RenderGrid = { columns: 80, rows: 1, styles: [], row_spans: [{ row: 0, column: 0, style_id: 0, cell_width: 1, text: 'z'.repeat(MAX_CACHED_ENTRY_BYTES) }] }
     saveSurfaceScreen('surface:1', { grid: huge, updatedAt: 1 })
     expect(localStorage.getItem('cmux-surface-cache:surface:1')).toBeNull()
   })
@@ -1911,44 +1962,9 @@ describe('D3.1 selectSurface の原子性（合成 reducer の結合テスト）
     expect(result.current.feeds.get('surface:1')?.source).toBe('cache')
   })
 
-  it('retained memory: 追い出し後の再昇格で、最初のコミットが warming/memory になる', () => {
-    const { result } = renderHook(() => trackingHook())
-    // 公開 selectSurface は cap = MAX_LIVE_SUBSCRIPTIONS 固定なので、確実に追い出すには
-    // 上限 + 1 件を順に選ぶ必要がある（2 件では追い出されず F4 のままになる）。
-    const surfaces = Array.from({ length: MAX_LIVE_SUBSCRIPTIONS + 1 }, (_, i) => ({
-      ref: `surface:${i}`,
-      type: 'terminal',
-      workspace_ref: 'workspace:1',
-      index: i,
-    }))
-    act(() => {
-      result.current.initializeFrom(surfaces, 'surface:0')
-    })
-    act(() => {
-      result.current.applyFeedResult({ ref: 'surface:0', epoch: 1, grid: { rows: 1, cols: 1, lines: [] }, now: 2000 })
-    })
-    expect(result.current.feeds.get('surface:0')).toMatchObject({ status: 'live', source: 'memory' })
-    // surface:1 〜 surface:8 を順に選ぶと、最古の surface:0 が購読集合から外れる
-    for (let i = 1; i <= MAX_LIVE_SUBSCRIPTIONS; i++) {
-      act(() => {
-        result.current.selectSurface(surfaces[i] as Surface)
-      })
-    }
-    expect(result.current.view.subscriptions.map((x) => x.ref)).not.toContain('surface:0')
-    // feed は D3.2 で保持され、status/source は F10 で据え置き
-    expect(result.current.feeds.get('surface:0')).toMatchObject({ status: 'live', source: 'memory' })
-    const epochBefore = result.current.feeds.get('surface:0')?.epoch as number
-
-    renderCounts.length = 0
-    act(() => {
-      result.current.selectSurface(surfaces[0] as Surface)
-    })
-    const first = renderCounts.find((r) => r.view === 'surface:0')
-    // 再昇格なので F1: 最初のコミットで warming/memory になっていること（live のままは不可）
-    expect(first?.feedStatus).toBe('warming')
-    expect(result.current.feeds.get('surface:0')?.source).toBe('memory')
-    expect(result.current.feeds.get('surface:0')?.epoch).toBe(epochBefore + 1)
-  })
+  // 「retained memory（追い出し → 再昇格）で最初のコミットが warming/memory」は
+  // feed を live へ進めるために applyFeedResult が要る。それが公開されるのは Task 8 なので、
+  // このテストは Task 8 に置く（Task 6 時点では型が通らない）。
 
   it('focus / promote は hook の公開 API に出ていない', () => {
     const { result } = renderHook(() => useCmux())
@@ -2186,7 +2202,8 @@ EOF
 - Modify: `apps/client/src/hooks/useCmux.ts`
 - Modify: `apps/client/src/App.tsx`（**初期取得 effect から surface/workspace の直接取得を外す**。下記）
 - Test: `apps/client/src/hooks/__tests__/useCmux.test.ts`
-- Test: `apps/client/src/__tests__/App.test.tsx`
+- Test: `apps/client/src/__tests__/App.test.tsx`（既存。`useCmux` を全面 mock している側）
+- **Create: `apps/client/src/__tests__/app-integration.test.tsx`**（新規。`useCmux` を mock せず `App` を mount し、RPC 本数と到着順を検証する専用ハーネス）
 
 **Interfaces:**
 - Consumes: Task 6 の `listSurfaces` / `reconcileWith`
@@ -2558,19 +2575,6 @@ describe('D2.1 topology 再取得ループ', () => {
     expect(result.current.view.foreground).toBe('surface:1')
   })
 
-  it('マウントして接続したとき surface.list / workspace.list はそれぞれ 1 本だけ', async () => {
-    hoisted.responses['surface.list'] = { surfaces: [] }
-    hoisted.responses['workspace.list'] = { workspaces: [] }
-    hoisted.responses['notification.list'] = { notifications: [] }
-    render(<App />)
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(0)
-    })
-    const count = (m: string) => sentRequests().filter((r) => r.method === m).length
-    expect(count('surface.list')).toBe(1)
-    expect(count('workspace.list')).toBe(1)
-  })
-
   it('片方の list が先に失敗しても、もう片方が settle するまで follow-up を始めない', async () => {
     const { result } = renderHook(() => useCmux())
     hoisted.errors['surface.list'] = { code: 'internal_error', message: 'boom' }
@@ -2684,10 +2688,108 @@ describe('D2.1 topology 再取得ループ', () => {
 })
 ```
 
+**App レベルの受入テストは新しいファイルに置く。** 既存の 2 つのハーネスはどちらも使えない:
+`useCmux.test.ts` は `.ts` なので JSX を parse できず `App` も `render` も持たない。
+`App.test.tsx` は `useCmux` を全面 mock しているので RPC 本数を数えられない。
+**`useCmux` を mock せず実物のまま `App` を mount する専用の結合テスト**を新規作成する。
+
+`apps/client/src/__tests__/app-integration.test.tsx`（新規）:
+
+```tsx
+// @vitest-environment jsdom
+import { act, render, screen } from '@testing-library/react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+import App from '../App'
+
+// useWebSocket だけを mock し、useCmux は実物を使う。送信された RPC を数えるための harness。
+const ws = vi.hoisted(() => ({
+  sent: [] as string[],
+  onMessage: { fn: (_d: string) => {} },
+  responses: {} as Record<string, unknown>,
+  // method ごとに応答を保留できるゲート（到着順の競合を作るため）。
+  held: {} as Record<string, { id: string; method: string }[]>,
+  hold: new Set<string>(),
+}))
+
+vi.mock('../hooks/useWebSocket', () => ({
+  useWebSocket: ({ onMessage }: { onMessage: (d: string) => void }) => {
+    ws.onMessage.fn = onMessage
+    return {
+      status: 'connected' as const,
+      send: (data: string) => {
+        ws.sent.push(data)
+        const req = JSON.parse(data) as { id: string; method: string }
+        if (ws.hold.has(req.method)) {
+          ;(ws.held[req.method] ??= []).push(req)
+          return true
+        }
+        ws.onMessage.fn(JSON.stringify({ id: req.id, ok: true, result: ws.responses[req.method] ?? {} }))
+        return true
+      },
+    }
+  },
+}))
+
+export function sentMethods(): string[] {
+  return ws.sent.map((x) => (JSON.parse(x) as { method: string }).method)
+}
+export function countOf(method: string): number {
+  return sentMethods().filter((m) => m === method).length
+}
+export function releaseHeld(method: string): void {
+  ws.hold.delete(method)
+  for (const req of ws.held[method] ?? []) {
+    ws.onMessage.fn(JSON.stringify({ id: req.id, ok: true, result: ws.responses[method] ?? {} }))
+  }
+  ws.held[method] = []
+}
+
+beforeEach(() => {
+  ws.sent.length = 0
+  ws.responses = {}
+  ws.held = {}
+  ws.hold.clear()
+  localStorage.clear()
+  sessionStorage.clear()
+  window.history.replaceState({}, '', '/')
+})
+
+describe('App 結合 — 初期 topology 取得は 1 経路だけ (D2.1 T1)', () => {
+  it('マウントして接続したとき surface.list / workspace.list はそれぞれ 1 本だけ', async () => {
+    ws.responses['surface.list'] = { surfaces: [] }
+    ws.responses['workspace.list'] = { workspaces: [] }
+    ws.responses['notification.list'] = { notifications: [] }
+    render(<App />)
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(countOf('surface.list')).toBe(1)
+    expect(countOf('workspace.list')).toBe(1)
+  })
+
+  it('直接取得の経路が存在しない（workspace_ref 付きの surface.list が飛ばない）', async () => {
+    ws.responses['surface.list'] = { surfaces: [] }
+    ws.responses['workspace.list'] = { workspaces: [{ ref: 'workspace:1', id: 'W1' }] }
+    render(<App />)
+    await act(async () => {
+      await Promise.resolve()
+    })
+    const listReqs = ws.sent
+      .map((x) => JSON.parse(x) as { method: string; params: Record<string, unknown> })
+      .filter((r) => r.method === 'surface.list')
+    expect(listReqs.every((r) => r.params.workspace_ref === undefined)).toBe(true)
+  })
+})
+```
+
+**Task 7 / 11 の App 受入テストはすべてこのファイルに置く**（Push の到着順、bootstrap、
+`pinned` の配線、5 表示ケースの描画）。Task 7 の Step 2/4 の実行コマンドにもこのファイルを含める。
+
 - [ ] **Step 2: テストが落ちることを確認する**
 
-Run: `cd apps/client && pnpm vitest run src/hooks/__tests__/useCmux.test.ts`
-Expected: FAIL（`requestTopologyRefresh` が存在しない）。
+Run: `cd apps/client && pnpm vitest run src/hooks/__tests__/useCmux.test.ts src/__tests__/app-integration.test.tsx`
+Expected: FAIL（`requestTopologyRefresh` が存在しない / 初期取得が 2 経路ある）。
 
 - [ ] **Step 3: 実装する**
 
@@ -2765,7 +2867,11 @@ export interface TopologySnapshot {
         const waiting = waitersRef.current.filter((w) => w.seq <= servedUpTo)
         waitersRef.current = waitersRef.current.filter((w) => w.seq > servedUpTo)
 
-        if (snapshot === null) {
+        if (!mountedRef.current) {
+          // unmount 後に continuation が走った。state へは一切適用しない。
+          for (const w of waiting) w.reject(new Error('unmounted'))
+          break
+        } else if (snapshot === null) {
           // 失敗しても既存の一覧は捨てない（一時的な通信不良でタブが全部消えるのを防ぐ）。
           // generation も進めない — 適用されていないものを「適用済み」と扱わないため。
           for (const w of waiting) w.reject(failure ?? new Error('topology refresh failed'))
@@ -2809,8 +2915,13 @@ export interface TopologySnapshot {
   // アンマウント時に、hidden 中に溜めた waiter を必ず reject する。
   // hidden 中の要求は RPC を開始しないので Task 2 の pending RPC cleanup の対象外であり、
   // これが無いと visible に戻る前に unmount した Promise が永久に未 settle になる。
+  // あわせて mountedRef を落とし、すでに settle 済みで continuation が queue に載っている
+  // fetchTopology が unmount 後に setSurfaces / reconcileWith へ到達するのを防ぐ。
+  const mountedRef = useRef(true)
   useEffect(() => {
+    mountedRef.current = true
     return () => {
+      mountedRef.current = false
       const waiters = waitersRef.current
       waitersRef.current = []
       for (const w of waiters) w.reject(new Error('unmounted'))
@@ -2860,6 +2971,42 @@ export interface TopologySnapshot {
   }, [status, requestTopologyRefresh])
 ```
 
+**bootstrap の境界は配列長ではなく「最初の snapshot を適用したか」で持つ（重要）**
+
+`useCmux` は `topologyReady: boolean` を公開する。**最初の refresh が成功して state へ適用された
+瞬間に `true`** になり、以後戻らない。`workspaces.length > 0 && surfaces.length > 0` を代用にしては
+ならない — **成功した snapshot が空配列であることは正規状態**（cmux に端末が 1 つも無い）であり、
+配列長で待つと bootstrap が永久に完了せず、後から端末が増えた時点で初回 `initializeFrom` が
+遅れて走って既存の選択と購読集合を作り直してしまう。
+
+**さらに、bootstrap が済むまで T1 の snapshot を `reconcileWith` に流してはならない。**
+空の `ViewState` に対する `reconcile` は生存一覧の先頭を前面化するので、App が URL /
+`sessionStorage` の優先順で `initializeFrom` する前に別サーフェスが最初のコミットで前面になり、
+`sessionStorage` への前面永続化 effect がその暫定値で旧値を上書きし得る。
+
+```ts
+  const bootstrappedRef = useRef(false)
+  const [topologyReady, setTopologyReady] = useState(false)
+
+  // runRefresh の適用ブロックの中（setSurfaces / setWorkspaces の直後）
+  //   generationRef.current += 1
+  //   setSurfaces(snapshot.surfaces)
+  //   setWorkspaces(snapshot.workspaces)
+  //   // bootstrap 前は reconcile しない。初回の前面決定は App の initializeFrom が行う。
+  //   if (bootstrappedRef.current) reconcileWith(snapshot.surfaces)
+  //   setTopologyReady(true)
+
+  // App が initializeFrom を呼んだ時点で bootstrap 完了とする。
+  const initializeFrom = useCallback((surfaces, preferredRef) => {
+    bootstrappedRef.current = true
+    dispatch({ type: 'initialize', surfaces, preferredRef, now: Date.now() })
+  }, [])
+```
+
+受入条件: **成功した空 snapshot でも `topologyReady` が `true` になり、`initializeFrom([], null)` が
+走って「端末がありません」が描かれること**、および **preferred surface 以外が中間コミットで
+前面にならず、`sessionStorage` の旧値も上書きされないこと**。
+
 **初期取得を 1 経路にする（重要）**
 
 現行 `App.tsx:112-133` の初期 effect は `listWorkspaces()` → `listNotifications()` を呼び、
@@ -2904,7 +3051,7 @@ refresh が reject したら**前面を変えず、エラーにもしない**（
 
 - [ ] **Step 4: テストが通ることを確認する**
 
-Run: `cd apps/client && pnpm vitest run src/hooks/__tests__/useCmux.test.ts`
+Run: `cd apps/client && pnpm vitest run src/hooks/__tests__/useCmux.test.ts src/__tests__/app-integration.test.tsx`
 Expected: PASS。
 
 - [ ] **Step 5: 型と lint、全体テスト**
@@ -2915,7 +3062,7 @@ Expected: エラーなし。
 - [ ] **Step 6: コミット**
 
 ```bash
-git add apps/client/src/hooks/useCmux.ts apps/client/src/App.tsx apps/client/src/hooks/__tests__/useCmux.test.ts apps/client/src/__tests__/App.test.tsx
+git add apps/client/src/hooks/useCmux.ts apps/client/src/App.tsx apps/client/src/hooks/__tests__/useCmux.test.ts apps/client/src/__tests__/App.test.tsx apps/client/src/__tests__/app-integration.test.tsx
 git commit -m "$(cat <<'EOF'
 feat(client): topology 再取得ループを入れる (D2.1)
 
@@ -3006,15 +3153,21 @@ import { BACKGROUND_POLL_INTERVAL, BACKGROUND_STAGGER, FOREGROUND_POLL_INTERVAL 
 import type { SurfaceLike, TerminalFeed, ViewState } from '../../lib/view-state'
 import { useTerminalFeeds } from '../useTerminalFeeds'
 
-const gridOf = (text: string): RenderGrid =>
-  ({ rows: 1, cols: text.length, lines: [{ spans: [{ text }] }], active_screen: 'primary', modes: [] }) as RenderGrid
+const gridOf = (text: string): RenderGrid => ({
+  columns: 80,
+  rows: 1,
+  styles: [],
+  row_spans: [{ row: 0, column: 0, style_id: 0, cell_width: text.length, text }],
+  active_screen: 'primary',
+  modes: [],
+})
 
 const feedOf = (over: Partial<TerminalFeed> = {}): TerminalFeed => ({
   grid: null,
   history: '',
   updatedAt: null,
   activity: false,
-  linesHash: '',
+  contentHash: '',
   status: 'loading',
   source: 'none',
   epoch: 1,
@@ -3459,7 +3612,7 @@ describe('useTerminalFeeds — 状態遷移', () => {
     })
     // hook は「捕まえた epoch」を付けて渡す。1 であって 2 ではない。
     const staleCall = h.applyFeedResult.mock.calls.find(
-      (c) => (c[0] as { grid: RenderGrid | null }).grid?.lines?.[0]?.spans?.[0]?.text === 'stale',
+      (c) => (c[0] as { grid: RenderGrid | null }).grid?.row_spans?.[0]?.text === 'stale',
     )
     expect((staleCall?.[0] as { epoch: number }).epoch).toBe(1)
   })
@@ -3605,8 +3758,10 @@ describe('createSwitcherReducer — feed の遷移 (F5〜F9)', () => {
   })
 
   it('カーソルだけが動いた grid は activity と見なさない (R4)', () => {
-    const withCursor = (text: string, col: number) =>
-      ({ rows: 1, cols: 1, lines: [{ spans: [{ text }] }], cursor: { row: 0, col } }) as RenderGrid
+    const withCursor = (text: string, column: number): RenderGrid => ({
+      ...grid(text),
+      cursor: { row: 0, column, visible: true },
+    })
     let s = reduce(emptyState(), { type: 'initialize', surfaces, preferredRef: 'surface:1', now: 1000 })
     s = reduce(s, { type: 'feedResult', ref: 'surface:1', epoch: 1, grid: withCursor('a', 0), now: 2000 })
     s = reduce(s, { type: 'select', surface: surfaces[1] as SurfaceLike, now: 3000, cap: MAX_LIVE_SUBSCRIPTIONS })
@@ -3678,18 +3833,19 @@ Expected: FAIL（`useTerminalFeeds` と feed 系 action が存在しない）。
       // 適用時点の foreground で行う（既購読端末どうしの切替では epoch が変わらないので、
       // 開始時点の isVisible を渡すと切替後に返った旧前面の取得を「今も前面」と誤判定する）。
       const isForeground = state.view.foreground === action.ref
-      // cursor を除いた lines だけをハッシュする（カーソル点滅を変化と見なさない。R4）。
-      const linesHash = action.grid === null ? '' : JSON.stringify(action.grid.lines)
-      const changed = linesHash !== '' && feed.linesHash !== '' && linesHash !== feed.linesHash
+      // row_spans だけをハッシュする。cursor は別フィールドなので、これで
+      // 「カーソル点滅だけでは変化と見なさない」が満たされる（R4）。
+      const contentHash = action.grid === null ? '' : JSON.stringify(action.grid.row_spans)
+      const changed = contentHash !== '' && feed.contentHash !== '' && contentHash !== feed.contentHash
       const activity = isForeground ? false : feed.activity || changed
 
       const next: TerminalFeed =
         action.grid === null
           // F5n: 停止端末。古い画面を出したまま「ライブ」と称しない。grid と history の
           // 両方を捨てる（history だけ残すと古い scrollback が再表示される）。
-          ? { ...feed, grid: null, history: '', linesHash: '', status: 'live', source: 'none', updatedAt: action.now, activity }
+          ? { ...feed, grid: null, history: '', contentHash: '', status: 'live', source: 'none', updatedAt: action.now, activity }
           // F5
-          : { ...feed, grid: action.grid, linesHash, status: 'live', source: 'memory', updatedAt: action.now, activity }
+          : { ...feed, grid: action.grid, contentHash, status: 'live', source: 'memory', updatedAt: action.now, activity }
       return { view: state.view, feeds: new Map(state.feeds).set(action.ref, next) }
     }
 
@@ -3944,6 +4100,53 @@ export function useTerminalFeeds(props: UseTerminalFeedsProps): void {
 Run: `cd apps/client && pnpm vitest run src/hooks/__tests__/useTerminalFeeds.test.ts src/lib/__tests__/view-state.test.ts src/hooks/__tests__/useCmux.test.ts`
 Expected: PASS。
 
+**`useCmux` 側の結合テスト**（`hooks/__tests__/useCmux.test.ts` に追記。
+Task 6 の「D3.1 selectSurface の原子性」describe と同じ `trackingHook` / `renderCounts` を使う。
+`applyFeedResult` はこの Task で公開されるので、ここで初めて書ける）:
+
+```ts
+describe('retained memory の再昇格（Task 8 で applyFeedResult が公開されてから書ける）', () => {
+  it('retained memory: 追い出し後の再昇格で、最初のコミットが warming/memory になる', () => {
+    const { result } = renderHook(() => trackingHook())
+    // 公開 selectSurface は cap = MAX_LIVE_SUBSCRIPTIONS 固定なので、確実に追い出すには
+    // 上限 + 1 件を順に選ぶ必要がある（2 件では追い出されず F4 のままになる）。
+    const surfaces = Array.from({ length: MAX_LIVE_SUBSCRIPTIONS + 1 }, (_, i) => ({
+      ref: `surface:${i}`,
+      type: 'terminal',
+      workspace_ref: 'workspace:1',
+      index: i,
+    }))
+    act(() => {
+      result.current.initializeFrom(surfaces, 'surface:0')
+    })
+    act(() => {
+      result.current.applyFeedResult({ ref: 'surface:0', epoch: 1, grid: { columns: 80, rows: 1, styles: [], row_spans: [] }, now: 2000 })
+    })
+    expect(result.current.feeds.get('surface:0')).toMatchObject({ status: 'live', source: 'memory' })
+    // surface:1 〜 surface:8 を順に選ぶと、最古の surface:0 が購読集合から外れる
+    for (let i = 1; i <= MAX_LIVE_SUBSCRIPTIONS; i++) {
+      act(() => {
+        result.current.selectSurface(surfaces[i] as Surface)
+      })
+    }
+    expect(result.current.view.subscriptions.map((x) => x.ref)).not.toContain('surface:0')
+    // feed は D3.2 で保持され、status/source は F10 で据え置き
+    expect(result.current.feeds.get('surface:0')).toMatchObject({ status: 'live', source: 'memory' })
+    const epochBefore = result.current.feeds.get('surface:0')?.epoch as number
+
+    renderCounts.length = 0
+    act(() => {
+      result.current.selectSurface(surfaces[0] as Surface)
+    })
+    const first = renderCounts.find((r) => r.view === 'surface:0')
+    // 再昇格なので F1: 最初のコミットで warming/memory になっていること（live のままは不可）
+    expect(first?.feedStatus).toBe('warming')
+    expect(result.current.feeds.get('surface:0')?.source).toBe('memory')
+    expect(result.current.feeds.get('surface:0')?.epoch).toBe(epochBefore + 1)
+  })
+})
+```
+
 - [ ] **Step 6: 型と lint、全体テスト**
 
 Run: `pnpm check && pnpm test`
@@ -4108,7 +4311,7 @@ describe('TabBar', () => {
 
   it('status が error のタブはドットが警告色になる', () => {
     const feeds = new Map<string, TerminalFeed>([
-      ['surface:1', { status: 'error', source: 'memory', grid: null, history: '', updatedAt: null, activity: false, linesHash: '', epoch: 1, promotedAt: 0 }],
+      ['surface:1', { status: 'error', source: 'memory', grid: null, history: '', updatedAt: null, activity: false, contentHash: '', epoch: 1, promotedAt: 0 }],
     ])
     const { container } = render(<TabBar {...base} feeds={feeds} />)
     const dot = container.querySelector('[data-testid="live-dot"]') as HTMLElement
@@ -4117,7 +4320,7 @@ describe('TabBar', () => {
 
   it('activity のあるタブはドットが 6px に拡大する', () => {
     const feeds = new Map<string, TerminalFeed>([
-      ['surface:1', { status: 'live', source: 'memory', grid: null, history: '', updatedAt: null, activity: true, linesHash: '', epoch: 1, promotedAt: 0 }],
+      ['surface:1', { status: 'live', source: 'memory', grid: null, history: '', updatedAt: null, activity: true, contentHash: '', epoch: 1, promotedAt: 0 }],
     ])
     const { container } = render(<TabBar {...base} feeds={feeds} />)
     const dot = container.querySelector('[data-testid="live-dot"]') as HTMLElement
@@ -4279,7 +4482,7 @@ describe('Drawer', () => {
 
 - [ ] **Step 2: テストが落ちることを確認する**
 
-Run: `cd apps/client && pnpm vitest run src/components/__tests__/Drawer.test.tsx`
+Run: `cd apps/client && pnpm vitest run src/components/__tests__/Drawer.test.tsx src/components/__tests__/ConnectionIndicator.test.tsx`
 Expected: FAIL。
 
 - [ ] **Step 3: 実装する**
@@ -4301,7 +4504,7 @@ Expected: FAIL。
 
 - [ ] **Step 4: テストが通ることを確認する**
 
-Run: `cd apps/client && pnpm vitest run src/components/__tests__/Drawer.test.tsx`
+Run: `cd apps/client && pnpm vitest run src/components/__tests__/Drawer.test.tsx src/components/__tests__/ConnectionIndicator.test.tsx`
 Expected: PASS。
 
 - [ ] **Step 5: 型と lint、全体テスト**
@@ -4579,6 +4782,9 @@ Expected: FAIL。
 - 前面フィードだけを `Terminal` に渡す: `const feed = feeds.get(view.foreground ?? '')`。
 - 表示は `describeFeed(feed)`（Task 4）の返り値で分岐する。`kind: 'grid'` なら `Terminal` に `feed.grid` / `feed.history` を渡し、`kind: 'message'` なら `Terminal` を描かずメッセージを出す。`freshness` は `ConnectionIndicator` の隣に薄く出す。
 - browser 分岐（`App.tsx:196-199, 430-454`）は**そのまま維持する**。
+- **空状態の描画**: `view.foreground === null` のとき（cmux に端末が 1 つも無い）は
+  `Terminal` も `BrowserView` も描かず、**「端末がありません」**を出す（spec §4 D3 の 5 番目）。
+  タブ行は `+` だけになる。この状態でも `pnpm check` / テストが通ること。
 - **`pinned` を ref から state へ移す。** 現行 `App.tsx:98-101` の `pinnedRef` は
   `onPinnedChange` が ref を書き換えるだけで**再 render を起こさない**。そのまま
   `pinned={pinnedRef.current}` を渡すと、スクロールで unpin しても `useTerminalFeeds` の
@@ -4609,22 +4815,29 @@ Expected: FAIL。
     直後に query を消すので、そのまま置き換えると一覧の到着順だけで Push 遷移が消える。
 
     ```ts
-    // URL から読んだ UUID を state に保持する。query の削除は「消費した後」だけ。
-    const [pendingWorkspaceId, setPendingWorkspaceId] = useState<string | null>(() => {
-      const wid = new URLSearchParams(window.location.search).get('workspace')
-      if (wid) stripWorkspaceQuery()   // URL の見た目はすぐ整える（値は state が持つ）
-      return wid
-    })
-
-    // bootstrap は「両方の一覧が揃ってから」1 回だけ走らせる。
+    // URL から読んだ UUID を state に保持する。読み取りだけを initializer で行い、
+    // URL の書き換え（外部状態の変更）は StrictMode で二重実行され得る render 中ではなく
+    // commit 後の effect で行う。
+    const [pendingWorkspaceId, setPendingWorkspaceId] = useState<string | null>(
+      () => new URLSearchParams(window.location.search).get('workspace'),
+    )
+    const didStripQuery = useRef(false)
     useEffect(() => {
-      if (bootstrappedRef.current) return
-      if (workspaces.length === 0 || surfaces.length === 0) return
+      if (didStripQuery.current) return
+      didStripQuery.current = true
+      stripWorkspaceQuery()   // 値は state が持っているので、URL の見た目だけ整える
+    }, [])
+
+    // bootstrap の境界は「最初の topology snapshot が適用済みか」。配列長で待たない
+    // （成功した空 snapshot は正規状態であり、配列長で待つと永久に完了しない）。
+    const bootstrappedRef = useRef(false)
+    useEffect(() => {
+      if (bootstrappedRef.current || !topologyReady) return
       bootstrappedRef.current = true
       const preferredRef = resolvePreferred(pendingWorkspaceId, workspaces, surfaces)
       setPendingWorkspaceId(null)
-      initializeFrom(surfaces, preferredRef)
-    }, [workspaces, surfaces, pendingWorkspaceId, initializeFrom])
+      initializeFrom(surfaces, preferredRef)   // surfaces が [] でも呼ぶ
+    }, [topologyReady, workspaces, surfaces, pendingWorkspaceId, initializeFrom])
     ```
 
     `resolvePreferred` は **UUID → `Workspace.id` → 配下の「購読中があればそれ、無ければ先頭」**、
@@ -4632,8 +4845,10 @@ Expected: FAIL。
     どちらも無ければ `null`（`initialize` が `active` → 先頭 の順で決める）。
     **対象ワークスペースが存在しないと確定した場合も同じ fallback を使う。**
 
-    受入条件: **`workspace.list` を先に resolve し `surface.list` を遅らせても、
-    最終的に通知先のサーフェスが前面になること**。
+    受入条件（`app-integration.test.tsx`）: **`workspace.list` を先に resolve し
+    `surface.list` を遅らせても、最終的に通知先のサーフェスが前面になること**、
+    **成功した空 snapshot でも bootstrap が完了して「端末がありません」が描かれること**、
+    **bootstrap 前に別サーフェスが前面にならず、`sessionStorage` の旧値も上書きされないこと**。
   - **マウント後の SW `postMessage`**: 対象 `Surface` を決めて **`selectSurface(surface)`** を呼ぶ。
     **`initializeFrom` を使ってはならない** — `initialize` は購読集合を「選んだ 1 件だけ」に
     作り直すので、それまでのバックグラウンド購読が全部落ちる。
