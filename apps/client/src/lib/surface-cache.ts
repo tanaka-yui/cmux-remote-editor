@@ -9,6 +9,17 @@ const KEY_PREFIX = 'cmux-surface-cache:'
 
 // 1 サーフェスあたりの保存上限（文字数）。超過分は末尾（最新行）を残して切り詰める。
 export const MAX_CACHED_CHARS = 200_000
+// 直列化後の 1 entry の上限（実バイト数）。text/scrollback に別々の文字数上限をかけても
+// grid と JSON のオーバーヘッドが載るため、1 件で 500KB を超えうる。
+export const MAX_CACHED_ENTRY_BYTES = 256 * 1024
+// C3 が働く前に件数が無限に増えないようにする二次ガード。
+export const MAX_CACHED_SURFACES = 12
+
+const encoder = new TextEncoder()
+
+function byteLength(value: string): number {
+  return encoder.encode(value).length
+}
 
 export interface CachedScreen {
   text?: string
@@ -27,27 +38,82 @@ function clampTail(value: string): string {
   return value.length > MAX_CACHED_CHARS ? value.slice(value.length - MAX_CACHED_CHARS) : value
 }
 
+function cacheKeys(): { key: string; updatedAt: number }[] {
+  const out: { key: string; updatedAt: number }[] = []
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i)
+    if (key === null || !key.startsWith(KEY_PREFIX)) continue
+
+    const raw = localStorage.getItem(key)
+    let updatedAt = 0
+    if (raw !== null) {
+      try {
+        updatedAt = (JSON.parse(raw) as CachedScreen).updatedAt ?? 0
+      } catch {
+        updatedAt = 0
+      }
+    }
+    out.push({ key, updatedAt })
+  }
+  return out.sort((a, b) => a.updatedAt - b.updatedAt)
+}
+
+// C5: scrollback -> text -> grid の順に削って entry を上限に収める。
+// grid だけでも超えるなら null を返し、その entry は保存しない。
+function fitEntry(entry: CachedScreen): string | null {
+  const attempt = (candidate: CachedScreen): string | null => {
+    const json = JSON.stringify(candidate)
+    return byteLength(json) <= MAX_CACHED_ENTRY_BYTES ? json : null
+  }
+
+  const full = attempt(entry)
+  if (full !== null) return full
+
+  const noScrollback = attempt({ ...entry, scrollback: undefined })
+  if (noScrollback !== null) return noScrollback
+
+  return attempt({ grid: entry.grid, updatedAt: entry.updatedAt })
+}
+
 export function saveSurfaceScreen(surfaceRef: string, screen: CachedScreen): void {
   if (typeof window === 'undefined') return
 
   // 未指定のフィールドは既存値を引き継ぐ（ライブ poll は grid のみ、履歴 fetch は
   // scrollback のみ、を渡すため）。これで text/scrollback/grid が互いを潰さない。
   const prev = loadSurfaceScreen(surfaceRef)
-  const clamped: CachedScreen = { updatedAt: screen.updatedAt }
+  const merged: CachedScreen = { updatedAt: screen.updatedAt }
 
   const text = screen.text ?? prev?.text
-  if (text !== undefined) clamped.text = clampTail(text)
+  if (text !== undefined) merged.text = clampTail(text)
 
   const scrollback = screen.scrollback ?? prev?.scrollback
-  if (scrollback !== undefined) clamped.scrollback = clampTail(scrollback)
+  if (scrollback !== undefined) merged.scrollback = clampTail(scrollback)
 
   const grid = screen.grid ?? prev?.grid
-  if (grid !== undefined) clamped.grid = grid
+  if (grid !== undefined) merged.grid = grid
 
-  try {
-    localStorage.setItem(keyFor(surfaceRef), JSON.stringify(clamped))
-  } catch {
-    // クォータ超過等は無視する（キャッシュは best-effort）。
+  const payload = fitEntry(merged)
+  if (payload === null) return
+
+  const key = keyFor(surfaceRef)
+  const others = cacheKeys().filter((entry) => entry.key !== key)
+  while (others.length >= MAX_CACHED_SURFACES) {
+    const oldest = others.shift()
+    if (!oldest) break
+    localStorage.removeItem(oldest.key)
+  }
+
+  const candidates = cacheKeys().filter((entry) => entry.key !== key)
+  for (;;) {
+    try {
+      localStorage.setItem(key, payload)
+      return
+    } catch (err) {
+      if (!(err instanceof Error) || err.name !== 'QuotaExceededError') return
+      const victim = candidates.shift()
+      if (!victim) return
+      localStorage.removeItem(victim.key)
+    }
   }
 }
 

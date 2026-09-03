@@ -1,13 +1,20 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { loadSurfaceScreen, MAX_CACHED_CHARS, saveSurfaceScreen } from '../surface-cache'
+import type { RenderGrid } from '../render-grid'
+import {
+  loadSurfaceScreen,
+  MAX_CACHED_CHARS,
+  MAX_CACHED_ENTRY_BYTES,
+  MAX_CACHED_SURFACES,
+  saveSurfaceScreen,
+} from '../surface-cache'
+
+beforeEach(() => {
+  localStorage.clear()
+})
 
 describe('surface-cache', () => {
-  beforeEach(() => {
-    localStorage.clear()
-  })
-
   it('未保存のサーフェスは null を返す', () => {
     expect(loadSurfaceScreen('surface:1')).toBeNull()
   })
@@ -68,5 +75,93 @@ describe('surface-cache', () => {
   it('壊れた JSON は null を返す（クラッシュしない）', () => {
     localStorage.setItem('cmux-surface-cache:surface:1', '{not json')
     expect(loadSurfaceScreen('surface:1')).toBeNull()
+  })
+})
+
+describe('C5 entry サイズ上限（実バイト数）', () => {
+  it('サイズは UTF-16 code unit ではなく TextEncoder の実バイト数で測る', () => {
+    const cjk = 'あ'.repeat(MAX_CACHED_ENTRY_BYTES / 3)
+    saveSurfaceScreen('surface:1', { scrollback: cjk, updatedAt: 1 })
+    const raw = localStorage.getItem('cmux-surface-cache:surface:1') as string
+    expect(new TextEncoder().encode(raw).length).toBeLessThanOrEqual(MAX_CACHED_ENTRY_BYTES)
+  })
+
+  it('超過したらまず scrollback を削る', () => {
+    saveSurfaceScreen('surface:1', {
+      text: 'short text',
+      scrollback: 'x'.repeat(MAX_CACHED_ENTRY_BYTES),
+      updatedAt: 1,
+    })
+    const loaded = loadSurfaceScreen('surface:1')
+    expect(loaded?.text).toBe('short text')
+    expect((loaded?.scrollback ?? '').length).toBeLessThan(MAX_CACHED_ENTRY_BYTES)
+  })
+
+  it('scrollback を削っても収まらなければ text も削る', () => {
+    saveSurfaceScreen('surface:1', {
+      text: 'y'.repeat(MAX_CACHED_ENTRY_BYTES),
+      scrollback: 'x'.repeat(MAX_CACHED_ENTRY_BYTES),
+      grid: { columns: 80, rows: 1, styles: [], row_spans: [] } as RenderGrid,
+      updatedAt: 1,
+    })
+    const loaded = loadSurfaceScreen('surface:1')
+    expect(loaded?.grid).toBeDefined()
+    const raw = localStorage.getItem('cmux-surface-cache:surface:1') as string
+    expect(new TextEncoder().encode(raw).length).toBeLessThanOrEqual(MAX_CACHED_ENTRY_BYTES)
+  })
+
+  it('grid だけでも超えるならその entry は保存しない', () => {
+    const huge: RenderGrid = {
+      columns: 80,
+      rows: 1,
+      styles: [],
+      row_spans: [{ row: 0, column: 0, style_id: 0, cell_width: 1, text: 'z'.repeat(MAX_CACHED_ENTRY_BYTES) }],
+    }
+    saveSurfaceScreen('surface:1', { grid: huge, updatedAt: 1 })
+    expect(localStorage.getItem('cmux-surface-cache:surface:1')).toBeNull()
+  })
+})
+
+describe('C3 QuotaExceededError の反復退避', () => {
+  it('候補が尽きるか成功するまで、updatedAt の古い順に削除して再試行する', () => {
+    for (let i = 0; i < 5; i++) saveSurfaceScreen(`surface:${i}`, { text: `t${i}`, updatedAt: i })
+    let failures = 3
+    const original = localStorage.setItem
+    const spy = vi.spyOn(localStorage, 'setItem').mockImplementation(function (this: Storage, k: string, v: string) {
+      if (k.startsWith('cmux-surface-cache:surface:new') && failures-- > 0) {
+        const err = new Error('quota') as Error & { name: string }
+        err.name = 'QuotaExceededError'
+        throw err
+      }
+      original.call(this, k, v)
+    })
+    saveSurfaceScreen('surface:new', { text: 'new', updatedAt: 99 })
+    spy.mockRestore()
+    expect(loadSurfaceScreen('surface:new')?.text).toBe('new')
+    expect(loadSurfaceScreen('surface:0')).toBeNull()
+    expect(loadSurfaceScreen('surface:2')).toBeNull()
+    expect(loadSurfaceScreen('surface:4')).not.toBeNull()
+  })
+
+  it('候補が尽きたら諦める（例外を投げない）', () => {
+    const spy = vi.spyOn(localStorage, 'setItem').mockImplementation(() => {
+      const err = new Error('quota') as Error & { name: string }
+      err.name = 'QuotaExceededError'
+      throw err
+    })
+    expect(() => saveSurfaceScreen('surface:1', { text: 'x', updatedAt: 1 })).not.toThrow()
+    spy.mockRestore()
+  })
+})
+
+describe('C4 件数の二次ガード', () => {
+  it(`MAX_CACHED_SURFACES(${MAX_CACHED_SURFACES}) を超えたら updatedAt の古い順に消す`, () => {
+    for (let i = 0; i < MAX_CACHED_SURFACES + 3; i++) {
+      saveSurfaceScreen(`surface:${i}`, { text: `t${i}`, updatedAt: i })
+    }
+    const keys = Object.keys(localStorage).filter((key) => key.startsWith('cmux-surface-cache:'))
+    expect(keys.length).toBeLessThanOrEqual(MAX_CACHED_SURFACES)
+    expect(loadSurfaceScreen('surface:0')).toBeNull()
+    expect(loadSurfaceScreen(`surface:${MAX_CACHED_SURFACES + 2}`)).not.toBeNull()
   })
 })
