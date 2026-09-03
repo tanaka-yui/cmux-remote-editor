@@ -38,6 +38,16 @@
   Claude-Session: https://claude.ai/code/session_01WNHHFenLzMSWFXCYGtWxsp
   ```
 
+### plan が spec を supersede する箇所
+
+**実装者へ: 次の 2 点は spec の記述より plan を優先すること。** spec 側にも同じ内容を反映済みだが、
+判断に迷ったら plan が正である。
+
+| 箇所 | spec の旧記述 | plan（正） | 理由 |
+|---|---|---|---|
+| D2.1 の共通 refresh | `requestTopologyRefresh(): Promise<number>`（generation を返し、呼び出し側は React state の一覧を読む） | **`Promise<TopologySnapshot>`**（`{ generation, surfaces, workspaces }` を返し、呼び出し側は snapshot から引く）。waiter の照合は generation ではなく**要求 seq** | async callback が閉じ込めた React state は `await` 後も更新されないため、常に作成前の一覧を見る。また generation は成功時しか進まないので、失敗時に queued waiter が到達不能な世代を待ち続ける（Task 7） |
+| `ConnectionIndicator` | `lastUpdated?: number \| null` | **`freshness: string \| null`** | D3.1 は connected 中も「更新: HH:MM:SS」「オフライン時点の内容 · 最終 HH:MM」を出す。`number` だけでは 5 ケースを表せない（Task 10） |
+
 ### 未レビューの箇所（spec §10 R9）
 
 spec のレビューは 5 ラウンド（上限）で打ち切っており、**最後の round 5 の修正内容だけはレビューを受けていない**。該当するのは次の 2 つで、**この plan では最初に実装してテストで固める**（Task 3 / Task 4 / Task 7）。
@@ -1670,9 +1680,11 @@ EOF
 **Files:**
 - Modify: `apps/client/src/hooks/useCmux.ts`（`selectWorkspace` 削除、`createWorkspace` / `createSurface` / `listSurfaces` の作り替え、`useReducer` の導入、移行用 shim の追加）
 - Modify: `apps/client/src/lib/cmux-rpc.ts:45-54`（`Surface` 型に D7 の属性を足す）
-- Modify: `apps/client/src/App.tsx`（`selectWorkspace` の呼び出しを削除。ドロワー行タップは展開のみに）
-- Modify: `apps/client/src/components/Drawer.tsx`（`onSelectWorkspace` prop の削除に伴う最小限の追随）
+- Modify: `apps/client/src/App.tsx`（`selectWorkspace` の 2 呼び出し元、`listSurfaces(currentWorkspace)` の 2 箇所（`App.tsx:157,244`）、初期取得 effect）
+- Modify: `apps/client/src/components/Drawer.tsx`（現行の prop 名は **`onSelect`**。ワークスペース行タップの意味を変える）
 - Test: `apps/client/src/hooks/__tests__/useCmux.test.ts`
+- Test: `apps/client/src/__tests__/App.test.tsx`（**既存テストが `listSurfaces` に workspace ref が付くことを期待している**。全ワークスペース契約へ更新する）
+- Test: `apps/client/src/components/__tests__/Drawer.test.tsx`（`onSelect` の意味変更に追随）
 
 **Interfaces:**
 - Consumes: Task 1（`FlatSurface` の新属性）, Task 2（`rpc` の即時 reject）, Task 4（`createSwitcherReducer`）, Task 5（`loadSurfaceScreen`）
@@ -1896,29 +1908,43 @@ describe('D3.1 selectSurface の原子性（合成 reducer の結合テスト）
     expect(result.current.feeds.get('surface:1')?.source).toBe('cache')
   })
 
-  it('retained memory: 追い出し後の再昇格でも最初のコミットで warming/memory', () => {
+  it('retained memory: 追い出し後の再昇格で、最初のコミットが warming/memory になる', () => {
     const { result } = renderHook(() => trackingHook())
-    const surfaces = [
-      { ref: 'surface:1', type: 'terminal', workspace_ref: 'workspace:1', index: 0 },
-      { ref: 'surface:2', type: 'terminal', workspace_ref: 'workspace:1', index: 1 },
-    ]
+    // 公開 selectSurface は cap = MAX_LIVE_SUBSCRIPTIONS 固定なので、確実に追い出すには
+    // 上限 + 1 件を順に選ぶ必要がある（2 件では追い出されず F4 のままになる）。
+    const surfaces = Array.from({ length: MAX_LIVE_SUBSCRIPTIONS + 1 }, (_, i) => ({
+      ref: `surface:${i}`,
+      type: 'terminal',
+      workspace_ref: 'workspace:1',
+      index: i,
+    }))
     act(() => {
-      result.current.initializeFrom(surfaces, 'surface:1')
+      result.current.initializeFrom(surfaces, 'surface:0')
     })
     act(() => {
-      result.current.applyFeedResult({ ref: 'surface:1', epoch: 1, grid: { rows: 1, cols: 1, lines: [] }, now: 2000 })
+      result.current.applyFeedResult({ ref: 'surface:0', epoch: 1, grid: { rows: 1, cols: 1, lines: [] }, now: 2000 })
     })
-    act(() => {
-      result.current.selectSurface(surfaces[1])
-    })
+    expect(result.current.feeds.get('surface:0')).toMatchObject({ status: 'live', source: 'memory' })
+    // surface:1 〜 surface:8 を順に選ぶと、最古の surface:0 が購読集合から外れる
+    for (let i = 1; i <= MAX_LIVE_SUBSCRIPTIONS; i++) {
+      act(() => {
+        result.current.selectSurface(surfaces[i] as Surface)
+      })
+    }
+    expect(result.current.view.subscriptions.map((x) => x.ref)).not.toContain('surface:0')
+    // feed は D3.2 で保持され、status/source は F10 で据え置き
+    expect(result.current.feeds.get('surface:0')).toMatchObject({ status: 'live', source: 'memory' })
+    const epochBefore = result.current.feeds.get('surface:0')?.epoch as number
+
     renderCounts.length = 0
     act(() => {
-      result.current.selectSurface(surfaces[0])
+      result.current.selectSurface(surfaces[0] as Surface)
     })
-    const first = renderCounts.find((r) => r.view === 'surface:1')
-    // 既購読のままなら F4 で live のまま。追い出されていれば warming/memory。
-    expect(['live', 'warming']).toContain(first?.feedStatus)
-    expect(result.current.feeds.get('surface:1')?.source).toBe('memory')
+    const first = renderCounts.find((r) => r.view === 'surface:0')
+    // 再昇格なので F1: 最初のコミットで warming/memory になっていること（live のままは不可）
+    expect(first?.feedStatus).toBe('warming')
+    expect(result.current.feeds.get('surface:0')?.source).toBe('memory')
+    expect(result.current.feeds.get('surface:0')?.epoch).toBe(epochBefore + 1)
   })
 
   it('focus / promote は hook の公開 API に出ていない', () => {
@@ -1978,12 +2004,49 @@ export interface Surface {
 
 - [ ] **Step 4: `useCmux` を作り替える**
 
-**このタスクで削除するもの**: `selectWorkspace` と、`useCmux.ts:101-103` の誤ったコメント。
-呼び出し元（`App.tsx:380-382` のドロワー行タップ、`createWorkspace` の追従、`closeWorkspace` の
-クリア）も同時に直す。
+**このタスクで削除するもの**: `selectWorkspace` / `navigateWorkspace` と、`useCmux.ts:101-103` の
+誤ったコメント。`navigateWorkspace` は `useCmux.ts:283-292` で `selectWorkspace` を直接呼んでいるので、
+残すと未定義参照になる。**同じコミットで削除する**（呼び出し元は現状 `App.tsx` のキーボード
+ショートカット等だけなので、参照が無いことを `grep` で確認してから消す）。
+
+**`selectWorkspace` の呼び出し元は 3 箇所ある**（実コードで確認済み）。すべて同じコミットで直す。
+
+| 場所 | 現状 | Task 6 での扱い |
+|---|---|---|
+| `App.tsx:381` | ドロワーのワークスペース行タップ（`Drawer` の `onSelect` prop） | RPC を投げない。この時点では**空関数にせず、`Drawer` の `onSelect` prop ごと削除**して展開/折りたたみは Task 10 で入れる。暫定として「そのワークスペース配下の先頭サーフェスを `selectSurface` する」に置き換えてもよい（挙動が壊れない） |
+| `App.tsx:345` | **Push 通知タップの遷移**（`workspaces.find(w => w.id === workspaceId)` で UUID から解決し `selectWorkspace(target.ref)`） | 下の「Push 経路の移行」のとおり `selectSurface` へ移す |
+| `useCmux.ts:283-292` | `navigateWorkspace` | 関数ごと削除する |
+
+> `closeWorkspace` は呼び出し元ではなく hook 内の別処理である（`currentWorkspace` を見て state を
+> クリアしている）。`currentWorkspace` が導出値になるのでこのクリア自体が不要になる。
+
+**Push 経路の移行（P1-4。spec §4 D1 の 3 番目の経路）**
+
+Web Push が渡すのは **`workspace_id`（UUID）**である（`push/payload.ts:12` が
+`/?workspace=${n.workspace_id}`、`sw.ts:55` が `postMessage({ type:'navigate', workspaceId })`）。
+**`workspace_ref` ではない。** 現行の `workspaces.find(w => w.id === workspaceId)` による解決は
+そのまま維持し、選択だけを差し替える。
+
+```ts
+    const navigateTo = (workspaceId: string) => {
+      // Push が渡すのは UUID。Workspace.id で引く（ref では引けない）。
+      const ws = workspaces.find((w) => w.id === workspaceId)
+      if (!ws) return
+      const inWs = surfaces.filter((s) => s.workspace_ref === ws.ref)
+      // 購読中があればそれ、無ければ先頭（spec §4 D1 の表）。
+      const subscribed = new Set(view.subscriptions.map((x) => x.ref))
+      const target = inWs.find((s) => subscribed.has(s.ref)) ?? inWs[0]
+      if (target) selectSurface(target)   // ← initializeFrom は使わない（下記）
+    }
+```
+
+**マウント後の通知ジャンプに `initializeFrom` を使ってはならない。** `initialize` は購読集合を
+「選んだ 1 件だけ」に作り直すので、それまでのバックグラウンド購読が全部落ちる。
+`initializeFrom` は**初回 bootstrap のみ**で使い、そこには「ディープリンク → `sessionStorage`」を
+1 個の `preferredRef` に解決してから渡す。
 
 **このタスクでは削除しないもの**（Task 11 で削除する）: `currentSurface` / `focusSurface`（shim として残す）、
-`panes` / `currentPane` / `listPanes` / `navigateWorkspace` / `navigatePane` / `navigateSurface`（触らない）。
+`panes` / `currentPane` / `listPanes` / `navigatePane` / `navigateSurface`（触らない）。
 
 追加するもの:
 
@@ -2088,7 +2151,7 @@ Expected: エラーなし。**shim のおかげでこの時点でもグリーン
 - [ ] **Step 7: コミット**
 
 ```bash
-git add apps/client/src/hooks/useCmux.ts apps/client/src/lib/cmux-rpc.ts apps/client/src/App.tsx apps/client/src/components/Drawer.tsx apps/client/src/hooks/__tests__/useCmux.test.ts
+git add apps/client/src/hooks/useCmux.ts apps/client/src/lib/cmux-rpc.ts apps/client/src/App.tsx apps/client/src/components/Drawer.tsx apps/client/src/hooks/__tests__/useCmux.test.ts apps/client/src/__tests__/App.test.tsx apps/client/src/components/__tests__/Drawer.test.tsx
 git commit -m "$(cat <<'EOF'
 feat(client): useCmux が SwitcherState を持ち workspace.select を捨てる (D1/D1.1)
 
@@ -2490,6 +2553,83 @@ describe('D2.1 topology 再取得ループ', () => {
     expect(result.current.view.foreground).toBe('surface:1')
   })
 
+  it('片方の list が先に失敗しても、もう片方が settle するまで follow-up を始めない', async () => {
+    const { result } = renderHook(() => useCmux())
+    hoisted.errors['surface.list'] = { code: 'internal_error', message: 'boom' }
+    hoisted.responses['workspace.list'] = { workspaces: [] }
+    hoisted.gate.openFor = { 'surface.list': true, 'workspace.list': false } // workspace.list だけ保留
+    act(() => {
+      void result.current.requestTopologyRefresh().catch(() => undefined)
+    })
+    act(() => {
+      void result.current.requestTopologyRefresh().catch(() => undefined) // dirty を立てる
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    const count = (m: string) => hoisted.sent.filter((x) => (JSON.parse(x) as { method: string }).method === m).length
+    // surface.list は失敗済みだが workspace.list がまだ保留。follow-up は始まらない。
+    expect(count('workspace.list')).toBe(1)
+    await act(async () => {
+      hoisted.gate.release('workspace.list')
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(count('workspace.list')).toBe(2) // ここで初めて follow-up が走る
+  })
+
+  it('hidden 中の直接 requestTopologyRefresh は RPC を 0 件に保つ', async () => {
+    const { result } = renderHook(() => useCmux())
+    hoisted.responses['surface.list'] = { surfaces: [] }
+    hoisted.responses['workspace.list'] = { workspaces: [] }
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    const before = hoisted.sent.length
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
+    let settled = false
+    act(() => {
+      void result.current.requestTopologyRefresh().then(
+        () => { settled = true },
+        () => { settled = true },
+      )
+    })
+    expect(hoisted.sent.length).toBe(before) // RPC を出していない
+    expect(settled).toBe(false) // waiter は保持されている
+    // 復帰で回収される
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(settled).toBe(true)
+  })
+
+  it('in-flight 中に dirty → hidden → 先行応答完了でも、復帰まで follow-up を開始しない', async () => {
+    const { result } = renderHook(() => useCmux())
+    hoisted.responses['surface.list'] = { surfaces: [] }
+    hoisted.responses['workspace.list'] = { workspaces: [] }
+    hoisted.gate.open = false
+    act(() => {
+      void result.current.requestTopologyRefresh().catch(() => undefined)
+    })
+    act(() => {
+      void result.current.requestTopologyRefresh().catch(() => undefined) // dirty を立てる
+    })
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
+    const before = hoisted.sent.length
+    await act(async () => {
+      hoisted.gate.release() // 先行サイクルが完了する
+    })
+    expect(hoisted.sent.length).toBe(before) // follow-up が始まっていない
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'))
+      hoisted.gate.release()
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(hoisted.sent.length).toBeGreaterThan(before) // 復帰後に走る
+  })
+
   it('失敗しても既存の一覧を捨てない', async () => {
     const { result } = renderHook(() => useCmux())
     hoisted.responses['surface.list'] = {
@@ -2542,12 +2682,21 @@ export interface TopologySnapshot {
   >([])
 
   // 取得だけを行う。state には触らない。
+  // Promise.all は fail-fast なので使わない — 片方が先に reject するともう片方が
+  // in-flight のままサイクルが完了扱いになり、follow-up が同じ method を重ねて投げる
+  // （E2 の「topology in-flight は 1 件」が実体として崩れる）。
+  // allSettled で **両方が settle するまでサイクルを完了させない**。
   const fetchTopology = useCallback(async (): Promise<{ surfaces: Surface[]; workspaces: Workspace[] }> => {
-    const [surfaceResult, workspaceResult] = await Promise.all([
+    const [surfaceResult, workspaceResult] = await Promise.allSettled([
       rpc('surface.list') as Promise<{ surfaces?: Surface[] }>,
       rpc('workspace.list') as Promise<{ workspaces?: Workspace[] }>,
     ])
-    return { surfaces: surfaceResult.surfaces ?? [], workspaces: workspaceResult.workspaces ?? [] }
+    if (surfaceResult.status === 'rejected') throw surfaceResult.reason
+    if (workspaceResult.status === 'rejected') throw workspaceResult.reason
+    return {
+      surfaces: surfaceResult.value.surfaces ?? [],
+      workspaces: workspaceResult.value.workspaces ?? [],
+    }
   }, [rpc])
 
   const runRefresh = useCallback(async () => {
@@ -2555,6 +2704,13 @@ export interface TopologySnapshot {
     inFlightRef.current = true
     try {
       for (;;) {
+        // E4: hidden 中は RPC を出さない。dirty と waiter は据え置き、復帰時に
+        // onVisibility が runRefresh を呼び直して回収する（waiter は宙に浮かない）。
+        // タイマー停止だけでは T3/T4 と follow-up が hidden 中に RPC を投げてしまう。
+        if (document.visibilityState === 'hidden') {
+          dirtyRef.current = true // 復帰後に必ず 1 回走らせる
+          break
+        }
         dirtyRef.current = false // 開始前に消費する
         // このサイクルが「包含する」要求の範囲を、開始時点の seq で固定する。
         // 実行中に来た要求は seq がこれより大きくなるので、次の follow-up が担当する。
@@ -2608,7 +2764,9 @@ export interface TopologySnapshot {
       waitersRef.current.push({ seq, resolve, reject })
     })
     dirtyRef.current = true
-    void runRefresh()
+    // hidden 中は RPC を出さず、dirty と waiter を保持したまま復帰を待つ
+    // （runRefresh の入口でも弾くが、ここで呼ばないほうが意図が明確）。
+    if (document.visibilityState !== 'hidden') void runRefresh()
     return promise
   }, [runRefresh])
 
@@ -2639,6 +2797,7 @@ export interface TopologySnapshot {
         timer = undefined
         return
       }
+      // 復帰時は即時。hidden 中に溜まった dirty と waiter はここで回収される。
       arm(0)
     }
     document.addEventListener('visibilitychange', onVisibility)
@@ -2974,6 +3133,56 @@ describe('useTerminalFeeds — 実行規律', () => {
       await vi.advanceTimersByTimeAsync(10)
     })
     expect(h.applyFeedResult).toHaveBeenCalled() // 復帰で再開する
+  })
+
+  it('readGrid の待機中に前面が切り替わったら、旧 ref の read_text と localStorage 保存を行わない', async () => {
+    let resolveGrid: ((g: RenderGrid | null) => void) | undefined
+    const readGrid = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise<RenderGrid | null>((r) => { resolveGrid = r }))
+      .mockResolvedValue(gridOf('x'))
+    const setItem = vi.spyOn(Storage.prototype, 'setItem')
+    const h = harness({ subscribed: ['surface:1', 'surface:2'], visible: ['surface:1'], pinned: true, readGrid })
+    const { rerender } = renderHook((props: Parameters<typeof useTerminalFeeds>[0]) => useTerminalFeeds(props), {
+      initialProps: h.props,
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    setItem.mockClear()
+    h.readText.mockClear()
+    // surface:1 の replay 待機中に surface:2 へ切り替える
+    rerender({ ...h.props, visibleRefs: ['surface:2'] })
+    await act(async () => {
+      resolveGrid?.(gridOf('a'))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    // surface:1 はもう背面。scrollback も localStorage 保存もしない。
+    expect(h.readText.mock.calls.filter((c) => c[0] === 'surface:1')).toHaveLength(0)
+    expect(setItem.mock.calls.filter((c) => (c[0] as string).includes('surface:1'))).toHaveLength(0)
+    // grid 自体は epoch が一致するので適用してよい
+    expect(h.applyFeedResult).toHaveBeenCalledWith(expect.objectContaining({ ref: 'surface:1' }))
+  })
+
+  it('取得待機中に hidden になってから返った rejection は feed も T4 も更新しない', async () => {
+    let rejectGrid: ((e: Error) => void) | undefined
+    const readGrid = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise<RenderGrid | null>((_, rej) => { rejectGrid = rej }))
+      .mockResolvedValue(gridOf('x'))
+    const h = harness({ subscribed: ['surface:1'], visible: ['surface:1'], pinned: false, readGrid })
+    renderHook(() => useTerminalFeeds(h.props))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
+    await act(async () => {
+      rejectGrid?.(Object.assign(new Error('Missing or invalid terminal_id'), { code: 'invalid_params' }))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(h.applyFeedError).not.toHaveBeenCalled()
+    expect(h.requestTopologyRefresh).not.toHaveBeenCalled()
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
   })
 
   it('E4: read_text の待機中に hidden になったら history も localStorage も更新しない', async () => {
@@ -3444,6 +3653,7 @@ import { visibleLineCount, stripVisibleScreen } from '../lib/scrollback'
 import { saveSurfaceScreen } from '../lib/surface-cache'
 import { BACKGROUND_STAGGER, pollPlan } from '../lib/view-state'
 import type { SurfaceLike, TerminalFeed, ViewState } from '../lib/view-state'
+import type { TopologySnapshot } from './useCmux'
 import type { ConnectionStatus } from './useWebSocket'
 
 export interface UseTerminalFeedsProps {
@@ -3506,17 +3716,21 @@ export function useTerminalFeeds(props: UseTerminalFeedsProps): void {
         return
       }
       inFlightRef.current.add(ref)
-      const p = latest.current
-      // F7: 開始時点の epoch を捕まえる。適用可否は epoch の一致で判定する。
-      // 時刻（promotedAt 以降か）では、追い出し前に開始した RPC が再昇格の後に返るケースを
-      // 除外できない。
-      const epoch = p.feeds.get(ref)?.epoch ?? 0
-      const isVisible = p.visibleRefs.includes(ref)
+      // **開始時点で固定してよいのは epoch だけ**である。
+      // F7: 適用可否は epoch の一致で判定する。時刻（promotedAt 以降か）では、
+      // 追い出し前に開始した RPC が再昇格の後に返るケースを除外できない。
+      const epoch = latest.current.feeds.get(ref)?.epoch ?? 0
       try {
-        const grid = await p.readGrid(ref)
+        const grid = await latest.current.readGrid(ref)
         // E4: 取得中に hidden になったら応答を state へ反映しない。
         // ただし finally でタイマーは張り直すので、ここで return しても止まらない。
         if (stopped || document.visibilityState === 'hidden') return
+        // **await の後は必ず latest.current を読み直す。** 開始時点の isVisible を
+        // 使い回すと、待機中に別端末へ切り替えたときに「もう背面になった ref」へ
+        // scrollback RPC を投げ、localStorage にも書いてしまう（C1/C6 と
+        // 「背面では scrollback を取らない」の両方に反する）。
+        const p = latest.current
+        const isVisible = p.visibleRefs.includes(ref)
         const now = Date.now()
         p.applyFeedResult({ ref, epoch, grid, now })
         staleResyncRef.current.delete(ref)
@@ -3536,18 +3750,23 @@ export function useTerminalFeeds(props: UseTerminalFeedsProps): void {
         // read_text 自体が失敗するため、いずれも取得しない。
         if (isVisible && p.pinned && grid && grid.active_screen !== 'alternate') {
           const text = await p.readText(ref, { scrollback: true, lines: p.historyLines })
-          // read_text の待機中に hidden になった応答も反映しない（E4）。
-          // grid 側だけ確認して history 側を素通しすると、hidden 中に state と
-          // localStorage が更新される。
-          if (stopped || !latest.current.pinned || document.visibilityState === 'hidden') return
-          p.applyFeedHistory({ ref, epoch, history: stripVisibleScreen(text, visibleLineCount(grid)) })
+          // read_text の待機中に hidden・unpin・**前面の切替**が起きた応答は反映しない。
+          // grid 側だけ確認して history 側を素通しすると、背面になった ref の
+          // state と localStorage が更新される。
+          const after = latest.current
+          if (stopped || !after.pinned || !after.visibleRefs.includes(ref)) return
+          if (document.visibilityState === 'hidden') return
+          after.applyFeedHistory({ ref, epoch, history: stripVisibleScreen(text, visibleLineCount(grid)) })
           if (text !== lastScrollbackRef.current.get(ref)) {
             lastScrollbackRef.current.set(ref, text)
             saveSurfaceScreen(ref, { scrollback: text, updatedAt: now })
           }
         }
       } catch (err) {
-        if (stopped) return
+        // 待機中に hidden になってから返った rejection も反映しない
+        // （hidden 中に applyFeedError と T4 の topology refresh が走ってしまう）。
+        if (stopped || document.visibilityState === 'hidden') return
+        const p = latest.current
         // T4: 閉じられた surface を指すと cmux は「Missing or invalid terminal_id」を
         // 返し続ける。一覧を取り直せば reconcile が生きた surface へ退避する。
         // ref ごとに 1 回だけ試みてループを防ぐ。
@@ -3872,25 +4091,65 @@ EOF
 
 **Files:**
 - Modify: `apps/client/src/components/Drawer.tsx`（ワークスペース行を展開折りたたみに、配下にサーフェス行）
-- Modify: `apps/client/src/components/Header.tsx`（`ワークスペース名 · 端末名` の 1 行 2 要素）
+- Modify: `apps/client/src/components/Header.tsx`（`ワークスペース名 · 端末名` の 1 行 2 要素 + `freshness` の受け渡し）
+- Modify: `apps/client/src/components/ConnectionIndicator.tsx`（`lastUpdated: number | null` → `freshness: string | null`）
 - Modify: `apps/client/src/App.tsx`（**同じタスクで呼び出し側も新 props へ移行する**。Task 9 と同じ理由）
 - Test: `apps/client/src/components/__tests__/Drawer.test.tsx`
+- Test: `apps/client/src/components/__tests__/ConnectionIndicator.test.tsx`（新規。`freshness` をそのまま出すこと、`null` なら何も出さないこと）
 
 **Interfaces:**
 - Consumes: Task 6 の `Surface` と `selectSurface`, Task 9 の購読ドット表現
-- Produces: `Drawer` の props に `surfaces` / `subscribedRefs` / `foreground` / `onSelectSurface` が増え、`onSelectWorkspace` が消える。`Header` の props が `workspaceTitle: string | null` / `surfaceTitle: string | null` になる。
+- Produces:
+  ```ts
+  interface DrawerProps {
+    // 既存: open / workspaces / onCloseWorkspace / onNewWorkspace / onClose ...
+    surfaces: Surface[]
+    foreground: string | null
+    subscribedRefs: ReadonlySet<string>
+    onSelectSurface: (surface: Surface) => void
+    // 現行の onSelect（ワークスペース選択）は削除する。行タップは展開/折りたたみのみ。
+  }
+
+  interface HeaderProps {
+    // workspaceName を 2 分割する（§5.1 の「1 行 2 要素」）
+    workspaceTitle: string | null
+    surfaceTitle: string | null
+    // D3.1 の鮮度ラベル。ConnectionIndicator へそのまま渡す。
+    freshness: string | null
+    onMenuToggle: () => void
+    showMenuButton?: boolean
+    status: ConnectionStatus
+    onOpenSettings: () => void
+  }
+
+  interface ConnectionIndicatorProps {
+    status: ConnectionStatus
+    // 既存の lastUpdated（切断時のみ「オフライン · 最終 HH:MM」）を置き換える。
+    // D3.1 の 5 ケースは connected 中も「更新: HH:MM:SS」「オフライン時点の内容 · 最終 HH:MM」
+    // を出す必要があり、lastUpdated: number だけでは表現できないため、
+    // 整形済みの文字列を受け取る形にする。
+    freshness: string | null
+  }
+  ```
+
+> **`ConnectionIndicator` の props を変えるのはこのタスクである。** 現行の
+> `lastUpdated?: number | null` は「切断中にいつの内容か」を出すだけで、D3.1 が要求する
+> connected 中の `更新:` / `オフライン時点の内容` を表せない。`describeFeed` が返す
+> `freshness` 文字列をそのまま受け取る形へ変え、整形は `describeFeed`（Task 4）に一本化する。
 
 - [ ] **Step 1: 失敗するテストを書く**
 
 ```tsx
 describe('Drawer', () => {
-  it('ワークスペース行のタップは展開/折りたたみだけで、RPC を投げない', async () => {
-    const onSelectWorkspace = vi.fn()
-    render(<Drawer {...base} />)
+  it('ワークスペース行のタップは展開/折りたたみだけで、サーフェスの前面化を起こさない', async () => {
+    const onSelectSurface = vi.fn()
+    render(<Drawer {...base} onSelectSurface={onSelectSurface} />)
     await userEvent.click(screen.getByText('freelance-jp-app'))
     expect(screen.getByText('[2] zsh')).toBeTruthy() // 展開された
+    expect(onSelectSurface).not.toHaveBeenCalled() // 行タップだけでは前面化しない
     await userEvent.click(screen.getByText('freelance-jp-app'))
     expect(screen.queryByText('[2] zsh')).toBeNull() // 折りたたまれた
+    expect(onSelectSurface).not.toHaveBeenCalled()
   })
 
   it('サーフェス行タップで onSelectSurface に Surface を渡す', async () => {
@@ -3927,7 +4186,8 @@ Expected: FAIL。
 - [ ] **Step 3: 実装する**
 
 - `Drawer`: ワークスペース行を `<button aria-expanded>` にし、`expanded: Set<string>` をローカル state で持つ（**永続化しない**）。初期値は `foreground` を含むワークスペース 1 件。配下に `surfaces.filter(s => s.workspace_ref === ws.ref)` を並べ、行頭に Task 9 と同じドットを出す。既存の閉じる `×` + AlertDialog（`Drawer.tsx:293-352`）はそのまま残す。
-- `Header`: `44px` の中で 1 行に 2 要素を `·` で区切る。ワークスペース名は `--color-text-muted`、端末名は `--color-text`。横幅が足りないときはワークスペース名側から `text-overflow: ellipsis` で省略する（**2 行にしない**）。
+- `Header`: `44px` の中で 1 行に 2 要素を `·` で区切る。ワークスペース名は `--color-text-muted`、端末名は `--color-text`。横幅が足りないときはワークスペース名側から `text-overflow: ellipsis` で省略する（**2 行にしない**）。`freshness` はそのまま `ConnectionIndicator` へ渡す。
+- `ConnectionIndicator`: `lastUpdated` を捨てて `freshness: string | null` を受け取り、**非 null ならそのまま薄く表示する**（`--color-text-subtle`）。時刻の整形は `describeFeed`（Task 4）が済ませているので、このコンポーネントは `formatClock` を持たない。既存の「connected→切断の 2 秒猶予」ロジックは変えない。
 
 - [ ] **Step 4: テストが通ることを確認する**
 
@@ -3942,7 +4202,7 @@ Expected: エラーなし。
 - [ ] **Step 6: コミット**
 
 ```bash
-git add apps/client/src/components/Drawer.tsx apps/client/src/components/Header.tsx apps/client/src/App.tsx apps/client/src/components/__tests__/Drawer.test.tsx
+git add apps/client/src/components/Drawer.tsx apps/client/src/components/Header.tsx apps/client/src/components/ConnectionIndicator.tsx apps/client/src/App.tsx apps/client/src/components/__tests__/Drawer.test.tsx apps/client/src/components/__tests__/ConnectionIndicator.test.tsx
 git commit -m "$(cat <<'EOF'
 feat(client): ドロワーを展開式にし、ヘッダーを WS 名 · 端末名の 1 行 2 要素にする
 
@@ -3992,47 +4252,58 @@ import { describeFeed } from '../view-state'
 describe('describeFeed — D3.1 の 5 表示ケース', () => {
   const at = 1_700_000_000_000 // 固定時刻
 
+  // describeFeed は feed が無いとき null を返す。strict null check を通すため、
+  // 各テストは必ずこのヘルパー経由で narrowing する。
+  function must(feed: TerminalFeed): NonNullable<ReturnType<typeof describeFeed>> {
+    const d = describeFeed(feed)
+    if (d === null) throw new Error('describeFeed returned null')
+    return d
+  }
+
   it('1. live/memory は鮮度ラベルを出さない', () => {
-    const d = describeFeed(feedOf({ status: 'live', source: 'memory', grid: gridOf('x'), updatedAt: at }))
+    const d = must(feedOf({ status: 'live', source: 'memory', grid: gridOf('x'), updatedAt: at }))
     expect(d).toEqual({ kind: 'grid', freshness: null })
   })
 
   it('2. warming/memory は「更新: HH:MM:SS」を出す', () => {
-    const d = describeFeed(feedOf({ status: 'warming', source: 'memory', grid: gridOf('x'), updatedAt: at }))
+    const d = must(feedOf({ status: 'warming', source: 'memory', grid: gridOf('x'), updatedAt: at }))
     expect(d.kind).toBe('grid')
     expect(d.freshness).toMatch(/^更新: \d{2}:\d{2}:\d{2}$/)
   })
 
   it('3. warming/cache は「オフライン時点の内容」を出す', () => {
-    const d = describeFeed(feedOf({ status: 'warming', source: 'cache', grid: gridOf('x'), updatedAt: at }))
+    const d = must(feedOf({ status: 'warming', source: 'cache', grid: gridOf('x'), updatedAt: at }))
     expect(d.kind).toBe('grid')
     expect(d.freshness).toMatch(/^オフライン時点の内容 · 最終 \d{2}:\d{2}$/)
   })
 
   it('4. loading/none は「読み込み中」を出し、空白にしない', () => {
-    const d = describeFeed(feedOf({ status: 'loading', source: 'none' }))
+    const d = must(feedOf({ status: 'loading', source: 'none' }))
     expect(d).toEqual({ kind: 'message', message: '読み込み中', freshness: null })
   })
 
   it('4. live/none は「端末が停止しています」を出す（F5n）', () => {
-    const d = describeFeed(feedOf({ status: 'live', source: 'none', updatedAt: at }))
-    expect(d.kind).toBe('message')
-    expect(d.message).toBe('表示できる内容がありません（端末が停止しています）')
+    const d = must(feedOf({ status: 'live', source: 'none', updatedAt: at }))
+    expect(d).toEqual({
+      kind: 'message',
+      message: '表示できる内容がありません（端末が停止しています）',
+      freshness: null,
+    })
   })
 
   it('5. error で描けるものがあれば残し、「接続なし · 最終 HH:MM」を出す', () => {
-    const d = describeFeed(feedOf({ status: 'error', source: 'memory', grid: gridOf('x'), updatedAt: at }))
+    const d = must(feedOf({ status: 'error', source: 'memory', grid: gridOf('x'), updatedAt: at }))
     expect(d.kind).toBe('grid')
     expect(d.freshness).toMatch(/^接続なし · 最終 \d{2}:\d{2}$/)
   })
 
   it('5. error で updatedAt が無ければ「接続なし」だけを出す', () => {
-    const d = describeFeed(feedOf({ status: 'error', source: 'none', updatedAt: null }))
+    const d = must(feedOf({ status: 'error', source: 'none', updatedAt: null }))
     expect(d).toEqual({ kind: 'message', message: '接続なし', freshness: '接続なし' })
   })
 
   it('5. error/none でも updatedAt があれば「接続なし · 最終 HH:MM」を出す（F5n の後で切断した場合）', () => {
-    const d = describeFeed(feedOf({ status: 'error', source: 'none', updatedAt: at }))
+    const d = must(feedOf({ status: 'error', source: 'none', updatedAt: at }))
     expect(d.kind).toBe('message')
     expect(d.freshness).toMatch(/^接続なし · 最終 \d{2}:\d{2}$/)
   })
@@ -4143,13 +4414,45 @@ describe('App — browser 分岐は現行維持 (D5)', () => {
   })
 })
 
-describe('App — ディープリンク (?workspace=)', () => {
-  it('該当ワークスペースのサーフェスを前面化する。購読中があればそれ、無ければ先頭', async () => {
-    window.history.replaceState({}, '', '/?workspace=workspace:26')
+describe('App — Push 通知ジャンプ (D1 の 3 番目の経路)', () => {
+  // Push が渡すのは workspace_id（UUID）。push/payload.ts:12 が /?workspace=<UUID> を作り、
+  // sw.ts:55 が postMessage({ type:'navigate', workspaceId:<UUID> }) を送る。
+  const WS26_UUID = 'C459840B-0000-0000-0000-000000000026'
+
+  it('?workspace=<UUID> は Workspace.id で解決して該当 WS のサーフェスを前面化する', async () => {
+    window.history.replaceState({}, '', `/?workspace=${WS26_UUID}`)
     render(<App />)
     expect(await screen.findByRole('tab', { name: /freelance-jp-app \/ zsh、ライブ購読中/ })).toBeTruthy()
-    // workspace.select は投げない
     expect(sentRequests().some((r) => r.method === 'workspace.select')).toBe(false)
+  })
+
+  it('ref を渡しても解決しない（UUID で引いているガード）', async () => {
+    window.history.replaceState({}, '', '/?workspace=workspace:26')
+    render(<App />)
+    // 前面は初期選択のまま変わらない
+    expect(await screen.findByRole('tab', { name: /influencer-platform \/ zsh/, selected: true })).toBeTruthy()
+  })
+
+  it('マウント後の SW メッセージは selectSurface を通り、既存の購読集合を保持する', async () => {
+    render(<App />)
+    // 先に 3 件を購読させる
+    await userEvent.click(screen.getByRole('tab', { name: /freelance-jp-app \/ zsh/ }))
+    await userEvent.click(screen.getByRole('tab', { name: /influencer-platform \/ zsh/ }))
+    const beforeDots = document.querySelectorAll('[data-testid="live-dot"]').length
+    expect(beforeDots).toBeGreaterThan(1)
+    await act(async () => {
+      dispatchServiceWorkerMessage({ type: 'navigate', workspaceId: WS26_UUID })
+    })
+    // initializeFrom を使うと購読が 1 件に作り直されてドットが減る
+    expect(document.querySelectorAll('[data-testid="live-dot"]').length).toBeGreaterThanOrEqual(beforeDots)
+  })
+
+  it('通知先に購読中のサーフェスがあればそれを、無ければ先頭を選ぶ', async () => {
+    render(<App />)
+    await act(async () => {
+      dispatchServiceWorkerMessage({ type: 'navigate', workspaceId: WS26_UUID })
+    })
+    expect(screen.getByRole('tab', { name: /freelance-jp-app/, selected: true })).toBeTruthy()
   })
 })
 ```
@@ -4168,7 +4471,15 @@ Expected: FAIL。
 - browser 分岐（`App.tsx:196-199, 430-454`）は**そのまま維持する**。
 - **タブの `+`**: `createSurface(foregroundSurface.workspace_id)` を呼ぶ（`workspace_ref` ではない）。戻り値の `misplaced` が `true` なら「別のワークスペースに作成されました」を出す。**自動 rollback（`surface.close`）はしない** — ユーザーが意図して作った端末を黙って消す方が損失が大きく、誤配置は Mac 側の `surface.move` で直せる。
 - **タブの `×`**: `closeSurface(ref)` は現行のまま。意味を変えない。
-- `?workspace=` / SW メッセージのディープリンクは、`preferredRef` の解決（ディープリンク → `sessionStorage`）を**呼び出し側で 1 個の ref にまとめてから** `initializeFrom` に渡す。ディープリンクがワークスペース単位なので、そのワークスペース配下の「購読中があればそれ、無ければ先頭」を 1 件選ぶ。
+- **ディープリンクは「初回 bootstrap」と「マウント後の通知」を分ける。**
+  - **初回 bootstrap**: URL の `?workspace=<UUID>` → `sessionStorage`（`cmux:foreground`）の順で
+    **1 個の `preferredRef` に解決**してから `initializeFrom(surfaces, preferredRef)` を呼ぶ。
+  - **マウント後の SW `postMessage`**: 対象 `Surface` を決めて **`selectSurface(surface)`** を呼ぶ。
+    **`initializeFrom` を使ってはならない** — `initialize` は購読集合を「選んだ 1 件だけ」に
+    作り直すので、それまでのバックグラウンド購読が全部落ちる。
+  - どちらも **`Workspace.id`（UUID）で workspace を引く**。Push payload は `workspace_id` を渡す
+    （`push/payload.ts:12` / `sw.ts:55`）。`workspace_ref` では引けない。
+  - ワークスペース配下の対象は「**購読中があればそれ、無ければ先頭**」（spec §4 D1 の表）。
 - `sessionStorage`（`cmux:foreground`）に前面 ref を保存する（`view.foreground` の変化を 1 箇所で拾う）。
 
 - [ ] **Step 4: テストが通ることを確認する**

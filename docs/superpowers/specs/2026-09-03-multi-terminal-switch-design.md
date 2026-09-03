@@ -308,12 +308,25 @@ E4 の「復帰時は前面のみ即時再取得」は feed の規則であり�
 2. **dirty は各取得の「開始前」に消費する**（下ろしてから RPC を投げる）
 3. その取得の最中にまた T1〜T4 が来れば dirty が再び立ち、完了後にもう 1 件走る
 
-**呼び出し元へ返す Promise は「その要求を包含する refresh が state に適用された後」に resolve する。**
-共通 refresh は適用のたびに単調増加する `generation` を持ち、`requestTopologyRefresh()` は
-**自分の要求を含んだ generation が適用された時点**で resolve する（`Promise<number>` で
-その generation を返す）。現在 in-flight の取得は自分の要求より前に始まっているので、
-その完了で resolve してはならない — D1.1 step 3 が作成前のスナップショットを見て
-「ref 不在」と誤判定し、新しいワークスペースを前面化しなくなる。
+**呼び出し元へ返す Promise は「その要求を包含する refresh が state に適用された後」に、
+その適用した一覧ごと resolve する。**
+
+```ts
+interface TopologySnapshot { generation: number; surfaces: Surface[]; workspaces: Workspace[] }
+requestTopologyRefresh(): Promise<TopologySnapshot>
+```
+
+**generation（数値）だけを返してはならない。** 呼び出し元の async callback が閉じ込めた
+React の `surfaces` state は「呼び出し開始時の render の値」のままで、refresh 内の `setSurfaces`
+による再 render では更新されない。`await` の後に state を読むと**常に作成前のスナップショット**を
+見る（D1.1 step 3 が「ref 不在」と誤判定する）。取得した一覧そのものを返すのが唯一の確実な方法である。
+
+**waiter の照合には「適用に成功した generation」を使ってはならない。** generation は成功時しか
+進まないので、先行 refresh が失敗すると queued waiter が到達不能な世代を待ち続ける。
+要求ごとに単調増加する **seq** を採番し、各サイクルは開始時点の seq までを担当して、
+**成否にかかわらず担当分を必ず settle する**（成功なら resolve、失敗・hidden 破棄なら reject）。
+
+現在 in-flight の取得は自分の要求より前に始まっているので、その完了で resolve してはならない。
 
 3 が要るのは、dirty を完了後に下ろすと **follow-up の実行中に来た新しい T3 を落とす**ためである。
 2 の順序なら連続 mutation の間は refresh が直列に続き得るが、それが正しい
@@ -868,7 +881,8 @@ export interface TerminalFeed {
 | `App.tsx` | 単数スカラー（`termGrid`/`termHistory`/`lastUpdated`）を `useTerminalFeeds` に委譲。前面フィードだけを `Terminal` に渡す。browser 分岐は現行維持（D5）。D3.1 の 5 表示ケースを `(status, source)` から選ぶ |
 | `components/TabBar.tsx` | 全サーフェスを描画。WS 色ドット、購読ドット、WS 境界の区切り線。`×` の意味は据え置き |
 | `components/Drawer.tsx` | ワークスペース行を展開可能にし、配下にサーフェス行を出す。購読ドットを揃える |
-| `components/Header.tsx` | `ワークスペース名 · 端末名` の 1 行 2 要素表示 |
+| `components/Header.tsx` | `ワークスペース名 · 端末名` の 1 行 2 要素表示。D3.1 の `freshness` を `ConnectionIndicator` へ渡す |
+| `components/ConnectionIndicator.tsx` | `lastUpdated?: number \| null` を **`freshness: string \| null`** に変える。現行は「切断中にいつの内容か」しか出せないが、D3.1 は connected 中も「更新: HH:MM:SS」「オフライン時点の内容 · 最終 HH:MM」を出す。時刻の整形は D3.1 の selector に一本化する |
 | `lib/surface-cache.ts` | C1〜C6（前面のみ / 変化時のみ / Quota の反復退避 / 件数の二次ガード / **C5 `TextEncoder` 実バイト数での entry 上限と `scrollback`→`text`→`grid` の段階的な切り詰め** / **C6 メモリと localStorage で更新契機を分ける**） |
 | `hooks/useWebSocket.ts` / `hooks/useCmux.ts` | D10 の 4 点すべて。切断時の全件 reject、**アンマウント時の同じ後始末とポーリング `setTimeout` の全 clear**、reject 後の遅延応答の破棄、**`send` を成否が分かる契約に変えて切断中の新規 RPC を即 reject** |
 | `apps/server/src/ws.ts` | `FlatSurface` に `workspace_ref` / `workspace_title` / `workspace_id` を追加し、**`system.tree` の `result.active` から `active` フラグを載せる**（D7）。**`surface.create` に注入している既定を `focus: true` から `focus: false` へ変える**（D6.1） |
