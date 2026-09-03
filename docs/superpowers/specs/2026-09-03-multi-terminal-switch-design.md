@@ -2,7 +2,7 @@
 
 - 日付: 2026-09-03
 - 対象: `apps/client`（主）/ `apps/server`（小）
-- 状態: レビュー中（point=spec / round 2）
+- 状態: レビュー中（point=spec / round 3）
 
 ## 1. 背景と要望
 
@@ -175,11 +175,23 @@ round 1 の spec は「新規端末の作成だけは例外」としていたが
 を返す（付録 A で再確認済み。新ワークスペースの surface 数は 1、`selected` は `false`）。
 
 したがって `workspace.create` のあとに `surface.create` を呼ぶと**端末が 2 つできる**。
-手順は次の 3 つだけである。
+手順は次の 3 つだけである。**順序に意味がある。**
 
 1. `workspace.create {}` を呼ぶ
-2. レスポンスの `surface_ref` を前面化する
-3. サーフェス一覧とワークスペース一覧を再取得する
+2. **サーフェス一覧とワークスペース一覧を再取得する**（D2.1 の T3）
+3. 再取得した一覧から、レスポンスの `surface_ref` に一致する `SurfaceLike` を引いて
+   `focus(state, surface, ...)` する
+
+**2 を 1 の直後に置くのは `focus` の入力を作るためである。** `focus` は type 判定のため
+`SurfaceLike` 全体を要求する（D2）が、`workspace.create` のレスポンスに `type` は含まれない
+（上のキー一覧のとおり）。レスポンスから `SurfaceLike` を合成すると、`type` を `'terminal'` と
+決め打ちすることになり、cmux 側の既定が変わったときに黙って壊れる。一覧を引き直すのが安全である。
+
+再取得は 1 往復（`system.tree` 実測 ~4ms、§3.5）増えるが、新規ワークスペースには表示すべき
+内容がまだ無いので体感差は無い。
+
+再取得した一覧に該当 `surface_ref` が無い場合（他クライアントが即座に閉じたなど）は
+**前面を変えず**、`reconcile` の通常の規則に任せる。エラーとして扱わない。
 
 `surface.create` と `workspace.select` のどちらも呼ばないことをテストで固定する。
 
@@ -196,8 +208,16 @@ export interface ViewState {
   subscriptions: { ref: string; lastForegroundAt: number }[]
   // 前面サーフェスの ref。
   foreground: string | null
+  // 前面サーフェスが属するワークスペースの ref。foreground と必ず同時に更新する。
+  // これを持たないと、前面が消えたときの退避順 2「消えた前面と同じワークスペースの先頭」
+  // （D3）が計算できない — 消えた ref は新しい生存一覧に無いため、そこから引けない。
+  // Header の `ワークスペース名 · 端末名` 表示と D1 の `currentWorkspace` 導出もこれを使う。
+  foregroundWorkspaceRef: string | null
 }
 ```
+
+`foregroundWorkspaceRef` は `foreground` の従属値であり、**独立に更新してはならない**。
+`foreground === null` のときは必ず `null` である（I6）。
 
 **不変条件（すべての遷移関数の事後条件としてテストする）**
 
@@ -207,7 +227,8 @@ export interface ViewState {
 | I2 | `foreground` が **terminal** のときに限り、それは必ず `subscriptions` に含まれる |
 | I3 | `subscriptions` に含まれるのは**生存する terminal だけ**（browser は入らない） |
 | I4 | `subscriptions` の ref に重複はない |
-| I5 | `subscriptions.length <= MAX_LIVE_SUBSCRIPTIONS` |
+| I5 | `subscriptions.length <= cap`（`cap` は遷移関数の引数。production では常に `MAX_LIVE_SUBSCRIPTIONS`） |
+| I6 | `foregroundWorkspaceRef` は `foreground` が指すサーフェスのワークスペースと一致する。`foreground === null` なら `null` |
 
 旧版の「`foreground` は必ず `subscriptions` に含まれる」と「browser は `subscriptions` に
 入らない」は、browser を前面化した瞬間に両立しなかった。I1 と I2 に分けることで、
@@ -220,13 +241,18 @@ browser 前面は「購読集合に入らないまま前面である」状態と
 // lastForegroundAt 最古を外す（foreground 自身は追い出さない。I2 を破らないため）。
 // browser なら foreground だけ更新し、購読集合には触れない（I3）。
 // 対象の type が必要なので ref ではなく SurfaceLike を受け取る。
+// cap の事前条件は 1 <= cap <= MAX_LIVE_SUBSCRIPTIONS。I5 は cap を上限として検査する。
 export function focus(state: ViewState, surface: SurfaceLike, now: number, cap: number): ViewState
 // 生存一覧に合わせて掃除する。消えた ref を subscriptions から外し、
 // foreground が消えていたら §4 D3 の退避順で選び直す。
+// 退避順 2 に必要な「消えた前面のワークスペース」は state.foregroundWorkspaceRef から取る
+// （消えた ref は surfaces に無いので、新しい一覧からは引けない）。
 export function reconcile(state: ViewState, surfaces: readonly SurfaceLike[], now: number): ViewState
 // 初期化。preferredRef は「ディープリンク → sessionStorage の前回前面」の順で
 // 呼び出し側が 1 個に解決して渡す。どちらも無ければ null。
 // initialize 内部では preferredRef -> s.active -> 先頭 の順で決める（D3）。
+// 初期購読集合は「前面が terminal ならそれ 1 件だけ、browser または null なら空」。
+// 先頭から cap 件まとめて購読することはしない（理由は D6）。
 export function initialize(surfaces: readonly SurfaceLike[], preferredRef: string | null, now: number): ViewState
 // ポーリング計画。表示中(visibleRefs)は 1Hz、その他の購読は 3s、非購読と browser は含めない。
 // visibleRefs を集合で受けるのは、分割ビュー(UR5)で「表示中」が複数になっても
@@ -257,9 +283,19 @@ T5 を入れるのは、UR1 が「現在存在する全サーフェス」を謳�
 偶発的な契機に頼れないためである。`system.tree` は実測 **~4ms** と安く（§3.5）、
 5 秒間隔なら占有率は 0.1% 未満で §3.5 の測定結果を実質的に変えない。
 
-規律はポーリングと同じ E1〜E4 を適用する。at-most-one in-flight、`hidden` 中は停止、
-**失敗しても既存の一覧を捨てない**（一時的な通信不良でタブが全部消えるのを防ぐ）、
+**適用する規律は E1・E2 と、E4 のうち「`hidden` 中は停止し、遅れて返った応答は反映しない」だけ**である。
+E3（背面 feed を index で stagger する）は対象が単一の topology loop には無意味なので適用しない。
+E4 の「復帰時は前面のみ即時再取得」は feed の規則であり、topology の復帰時再取得は上の T2 が担う
+（この 2 つは別物で、字義どおり E4 を適用すると T2 と衝突する）。
+加えて **失敗しても既存の一覧を捨てない**（一時的な通信不良でタブが全部消えるのを防ぐ）、
 取得した一覧は必ず `reconcile` を通し `ViewState` の更新と同一の遷移で反映する。
+
+**即時再取得（T1〜T4）が定期取得（T5）の in-flight 中に来たときは、捨てずに 1 回だけ合流する。**
+dirty フラグを 1 個持ち、in-flight 中に T1〜T4 が発火したらフラグを立てるだけにして、
+完了直後にフラグが立っていれば**追加でもう 1 回だけ**取得してフラグを下ろす
+（何回発火していても follow-up は 1 回。single-flight を保ったまま「直後」の契約を満たす）。
+これが無いと、mutation 直後の T3 が in-flight とぶつかったときに最大 5 秒待つことになり、
+「自分の操作の結果がすぐ出る」という T3 の目的が果たせない。
 
 現行の `closeWorkspace` は `listWorkspaces()` しか呼んでいない（`useCmux.ts:207-211`）ため、
 閉じたワークスペース配下のサーフェスがタブに残る。T3 でサーフェス一覧も更新する。
@@ -270,9 +306,10 @@ T5 を入れるのは、UR1 が「現在存在する全サーフェス」を謳�
 「最新」を必須にすると購読を止める設計自体が成り立たないので、UR3 を**観測可能な 5 ケース**に分解する。
 これが受入条件であり、そのままテスト名になる。
 
-**表示ケースは `TerminalFeed.status` で一意に決まる。** 購読集合の在否では決まらない。
+**表示ケースは `(status, source)` の組で一意に決まる。** 購読集合の在否では決まらない。
 `focus` は選んだ terminal を**即座に**購読集合へ入れるため、「非購読だから古い」という判定は
-切替の瞬間に成立しなくなる。そこで**昇格してから 1 回でも取得に成功したか**を状態として持つ。
+切替の瞬間に成立しなくなる。そこで**昇格してから 1 回でも取得に成功したか**（`status`）と、
+**いま描いているフレームがどこ由来か**（`source`）を分けて持つ。
 
 ```ts
 export type FeedStatus =
@@ -280,24 +317,53 @@ export type FeedStatus =
   | 'warming'  // 昇格したが、まだ 1 回も成功していない（前回以前のフレームを見せている）
   | 'loading'  // 表示できるフレームが 1 つも無い（初見）
   | 'error'    // 直近の取得に失敗した / WS が切れている
+
+export type FeedSource =
+  | 'memory'   // このセッションで取得したフレーム（D3.2 の保持分を含む）
+  | 'cache'    // localStorage から復元したスナップショット
+  | 'none'     // 描けるフレームが無い
 ```
 
-`live` へ移れるのは **post-promotion の初回取得が成功したときだけ**である。
-初回取得の失敗や WS 切断では `live` にせず `error` へ移る。
+`status` を 4 値のままにして `source` を分けたのは、`warming` の 2 ケース
+（メモリの前回フレーム / キャッシュのみ）が**鮮度ラベルだけ違う同じ状態**だからである。
+キャッシュを feed へ復元してしまうと `status` だけでは由来を区別できない。
 
-| # | status | 表示 | 鮮度の提示 |
+| # | `(status, source)` | 表示 | 鮮度の提示 |
 |---|---|---|---|
-| 1 | `live` | メモリ上の直近フレームを**同期的に**描画。RPC を待たない | 出さない（通常時は前面 1 秒 / 背面 3 秒以内に更新される。処理時間・タイムアウト・切断があるため**保証ではなく目標**で、失敗時は 5 へ移る） |
-| 2 | `warming`（メモリに前回のフレームあり） | その最終フレームを同期的に描画し、成功後に差し替える | 「更新: HH:MM:SS」を薄く出す |
-| 3 | `warming`（メモリに無く localStorage キャッシュあり） | キャッシュを描画し、成功後に差し替える | 「オフライン時点の内容 · 最終 HH:MM」 |
-| 4 | `loading` | **空白にしない。**「読み込み中」を出す | — |
-| 5 | `error` | 直近に表示できるものがあればそれを残す | 「接続なし · 最終 HH:MM」 |
+| 1 | `live` / `memory` | メモリ上の直近フレームを**同期的に**描画。RPC を待たない | 出さない（鮮度目標は D4 E1 のとおり「interval + 取得時間」。失敗すれば 5 へ移る） |
+| 2 | `warming` / `memory` | その最終フレームを同期的に描画し、成功後に差し替える | 「更新: HH:MM:SS」を薄く出す |
+| 3 | `warming` / `cache` | キャッシュを描画し、成功後に差し替える | 「オフライン時点の内容 · 最終 HH:MM」 |
+| 4 | `loading` / `none` | **空白にしない。**「読み込み中」を出す | — |
+| 5 | `error` / `memory` または `cache` または `none` | 描けるものがあればそれを残す。無ければ 4 と同じ枠に「接続なし」 | 「接続なし · 最終 HH:MM」 |
 
 **空白のまま前の端末の画面を残してはならない**（別の端末の内容を今の端末だと誤認させるため）。
 切替時にフィードが無ければ、まず旧端末の描画を捨ててから読み込み表示にする。
 
 この 5 ケースは `useTerminalFeeds` と `Terminal` の両方でテストする。
 本文・UR3・テストの数え方はすべて「5 ケース」で統一する。
+
+#### 状態遷移（これが実装契約である）
+
+`TerminalFeed` は `epoch: number` を持つ。**昇格するたびに単調増加**し、
+RPC は**開始時点の epoch を捕まえて**発行する。応答の適用可否は
+`captured.epoch === feed.epoch` で判定する。時刻（`promotedAt` 以降か）では判定できない
+— 追い出し前に開始した RPC が再昇格の**後**に返れば、時刻だけ見ると条件を満たしてしまうためである。
+
+| # | 遷移 | 条件 | 結果 |
+|---|---|---|---|
+| F1 | 昇格（購読外 → 購読内） | メモリに描けるフレームがある | `epoch++` / `promotedAt = now` / `warming` / `memory` |
+| F2 | 昇格 | メモリに無く localStorage キャッシュがある。**キャッシュの復元も同じ遷移の中で行う** | `epoch++` / `promotedAt = now` / `warming` / `cache` |
+| F3 | 昇格 | どちらも無い | `epoch++` / `promotedAt = now` / `loading` / `none` |
+| F4 | 前面化のみ（すでに購読中） | — | **何も変えない**。`live` を `warming` へ戻さない |
+| F5 | 取得成功（`captured.epoch === feed.epoch`） | — | `live` / `memory`、`updatedAt = now` |
+| F6 | 取得失敗（同上） | タイムアウト・`internal_error`・stale など | `error`。`source` と描画中フレームは保持 |
+| F7 | 応答到着（`captured.epoch !== feed.epoch`） | 追い出し後の再昇格などで epoch が進んでいる | **破棄する**。`status` も `grid` も変えない |
+| F8 | WS 切断 | — | 全 feed を `error` にする。フレームは保持（`source` も保持） |
+| F9 | 再接続成功 | — | 購読中の全 feed を F1〜F3 と同じ規則で**昇格からやり直す**（`epoch++`） |
+| F10 | 購読解除（追い出し） | — | `status` は据え置き。フレームは D3.2 に従って保持し、次の昇格で F1 に入る |
+
+F1〜F3 は**前面の初回描画より前に原子的に**適用する（`focus` と同じ 1 回の state 更新に載せる）。
+そうしないと「前の端末の画面が 1 フレームだけ残る」ことが起きうる。
 
 ### D3.2 メモリ上のフィードは購読より長く保持する
 
@@ -335,7 +401,8 @@ cmux が実際に見ているサーフェスとは無関係なものを選びう
 **前面が消えたときの退避順（`reconcile`）**
 
 1. `subscriptions` に残っている中で `lastForegroundAt` が最も新しいもの
-2. それも無ければ、生存一覧の中で消えた前面と**同じワークスペース**の先頭
+2. それも無ければ、生存一覧の中で **`state.foregroundWorkspaceRef` と同じワークスペース**の先頭
+   （消えた ref から辿るのではなく、`ViewState` に持っていた値を使う）
 3. それも無ければ**生存一覧の先頭（＝別ワークスペースへ移る）**
 4. 生存一覧が空なら `null`
 
@@ -343,14 +410,19 @@ cmux が実際に見ているサーフェスとは無関係なものを選びう
 前面のワークスペースが空になっただけなら 3 で別ワークスペースへ移る。
 旧版はここが「別ワークスペースへ飛ばさない」と読める書き方になっていた。
 
+`surface.move` で移動したサーフェスは **ref が振り直される**（P12）ため、`reconcile` からは
+「消えて別の ref が増えた」ように見える。この場合も上の退避順をそのまま適用する
+（移動前のワークスペースの先頭へ移る）。移動先を追いかける特別扱いはしない — 移動は
+Mac 側の操作であり、PWA の前面が勝手に別ワークスペースへ飛ぶ方が驚きが大きい。
+
 **タブの並びは `system.tree` の順（ワークスペース順 → ペイン順 → サーフェス順）で固定**し、
 前面化や購読で**並べ替えない**。並べ替えるとタップ位置が動いて誤タップを誘発する。
 `lastForegroundAt` は LRU の判定にのみ使い、表示順には影響しない。
 
 **購読集合はセッション限定**とし、`localStorage` には保存しない。
 前面の ref だけを `sessionStorage`（`cmux:foreground`）に持ち、リロード後の復帰に使う。
-購読を永続化すると、閉じた端末や別マシンの状態を復元しようとして I3 を破りやすく、
-得られる利点（リロード直後に 8 本が温まっている）は 3 秒で自然に回復する程度のものである。
+購読を永続化すると、閉じた端末や別マシンの状態を復元しようとして I3 を破りやすい。
+そもそも初期購読集合は前面 1 件だけ（D6）なので、復元して温める対象も無い。
 
 ### D4. ポーリングの実行規律（round 1 レビュー P1-3 への対応）
 
@@ -360,7 +432,7 @@ cmux が実際に見ているサーフェスとは無関係なものを選びう
 
 | # | 規律 |
 |---|---|
-| E1 | `setInterval` を使わない。**1 回の取得が完了してから `setTimeout` で次回を予約する**（自己再帰スケジュール）。**周期は「最大頻度」であって保証周期ではない**: 前面は*最大* 1Hz、背面は*最大* 1/3Hz。1 サイクルが周期を超えたら（overrun）**取りこぼした tick は捨て**、次回は**完了時刻から所定の間隔だけ待つ**。開始時刻を起点に遅れを取り戻そうとしない（連打で過負荷を増幅させないため） |
+| E1 | `setInterval` を使わない。**1 回の取得が完了してから `setTimeout` で次回を予約する**（自己再帰スケジュール）。したがって**間隔は「取得完了から次の取得開始まで」**であり、成功の間隔は `interval + 取得時間` になる。**鮮度目標もこの式で書く**: 前面は 1000ms + p50 142ms ≒ **1.14 秒**、背面は 3000ms + 実測分 ≒ **3.06 秒以上**（§3.5）。「1 秒ちょうど」「3 秒以内」は保証しない。overrun（1 サイクルが interval を超える）時も同じ式で、**取りこぼした tick は捨て**、開始時刻を起点に遅れを取り戻そうとしない（連打で過負荷を増幅させないため）。開始時刻基準で残り時間だけ待つ方式は採らない — 負荷面で §3.5 の測定より楽観的になり、安全域 2 クライアントという結論の前提が変わるため |
 | E2 | **サーフェスごとの in-flight は常に 1 件まで**。前の応答が返るまで次を出さない |
 | E3 | 背面の初回発火を **`index * BACKGROUND_STAGGER` だけずらす**（burst の平準化）。実測はこの分散込みの数値である |
 | E4 | `document.visibilityState === 'hidden'` の間は**タイマーを張らず、遅れて返った応答も state に反映しない**。復帰時は前面のみ即時再取得し、背面は次の周期から |
@@ -392,10 +464,22 @@ BACKGROUND_STAGGER = 400 ms   // §3.5 の測定で用いた値に揃える
 TOPOLOGY_POLL_INTERVAL = 5000 ms
 ```
 
-**上限超過時の挙動**: 前面化されたサーフェスを購読集合へ入れ、集合が 8 を超えたら
+**初期購読集合は 1 件である。** `initialize` は前面が terminal ならそれだけを購読集合に入れ、
+browser または `null` なら空にする。**起動直後に先頭から 8 件をまとめて購読しない。**
+理由は 2 つある。(a) リロードのたびに 8 本の RPC が同時に立ち上がり、§3.5 の測定条件
+（前面 1 + 背面 7 が定常状態で回っている）とは違う瞬間負荷になる。(b) UR2 の購読ドットは
+「ユーザーが選んだ端末がライブである」ことを示すものであり、起動直後に本人が選んでいない
+7 個へドットが点くのは表示として嘘になる。購読はユーザーが `focus` した端末から順に増える。
+
+**`cap` の事前条件は `1 <= cap <= MAX_LIVE_SUBSCRIPTIONS`** とし、I5 は `cap` を上限として
+検査する（`focus` が任意の `cap` を受けるのに I5 が定数を見ていると、両者がずれる）。
+production の呼び出しは常に `MAX_LIVE_SUBSCRIPTIONS` を渡す。`cap` を引数にしているのは
+テストで小さい値を使って追い出しを検証するためである。
+
+**上限超過時の挙動**: 前面化されたサーフェスを購読集合へ入れ、集合が `cap` を超えたら
 `lastForegroundAt` が最古のものの購読を解除する。ただし前面自身は追い出さない（I2）。
 **`lastForegroundAt` が同値のときは `system.tree` 順で後ろにあるものを先に外す**
-（初期購読集合をまとめて作った直後は全件が同時刻になりうるため、tie-break を決定的にする）。
+（tie-break を決定的にするため。初期購読は 1 件なので同時刻が並ぶのは主にテストの場面である）。
 解除されるのは購読だけで、cmux 側の端末は閉じないし、タブ行からも消えない（ドットが消えるだけ）。
 
 **UDS 接続の割り当て**: 現行どおり **ブラウザ WS 1 本につき cmux UDS 1 本**とし、
@@ -496,7 +580,7 @@ UR5 の受入条件は「フィードと描画が 1 端末単位に分離され�
 10 秒のタイムアウト（`useCmux.ts:23,71-74`）を待って初めて reject される。
 
 単一端末なら宙に浮く Promise は 1 本だが、購読が 8 本になると同時に 8 本が宙に浮く。
-本設計が増幅する欠陥なので範囲内で直す。契約は次の 3 点である。
+本設計が増幅する欠陥なので範囲内で直す。契約は次の 4 点である。
 
 1. **切断時に `pendingRef` の全 Promise を即座に reject する**。各 Promise の reject は
    ちょうど 1 回（タイムアウトタイマーは reject 前に必ず `clearTimeout` する）
@@ -621,7 +705,7 @@ browser サーフェスは「未購読」ではなく **「browser、購読対�
 ### 新規モジュール
 
 **`apps/client/src/lib/view-state.ts`（純粋）** — D2 の `ViewState` と 4 つの遷移関数、
-および不変条件 I1〜I5 を満たすことの責任を持つ。UI も RPC も知らない。
+および不変条件 I1〜I6 を満たすことの責任を持つ。UI も RPC も知らない。
 
 **`apps/client/src/hooks/useTerminalFeeds.ts`** — `Map<surfaceRef, TerminalFeed>` を持ち、
 `pollPlan` に従って E1〜E5 の規律でサーフェスごとの取得を回す。
@@ -638,8 +722,10 @@ export interface TerminalFeed {
   history: string
   updatedAt: number | null
   activity: boolean       // 前面を離れてから内容が変化した
-  status: FeedStatus      // D3.1 の表示ケースはこの 1 フィールドで決まる
-  promotedAt: number      // 購読へ昇格した時刻。post-promotion の初回成功判定に使う
+  status: FeedStatus      // D3.1
+  source: FeedSource      // D3.1。表示ケースは (status, source) の組で決まる
+  epoch: number           // 昇格ごとに単調増加。応答の適用可否判定に使う（D3.1 F1〜F9）
+  promotedAt: number      // 最後に昇格した時刻。表示とログ用（判定には epoch を使う）
 }
 ```
 
@@ -647,14 +733,14 @@ export interface TerminalFeed {
 
 | ファイル | 変更 |
 |---|---|
-| `hooks/useCmux.ts` | `selectWorkspace` を公開 API から削除し `currentWorkspace` を導出値にする（D1）。`listSurfaces()` を全ワークスペース取得に。`createSurface` は `workspace_id` 指定 + レスポンスから新 ref を取得（P7/P9）し、返り値の `workspace_id` を検証（P8）。`ViewState` の保持と `focus` の公開 |
-| `App.tsx` | 単数スカラー（`termGrid`/`termHistory`/`lastUpdated`）を `useTerminalFeeds` に委譲。前面フィードだけを `Terminal` に渡す。browser 分岐は現行維持（D5） |
+| `hooks/useCmux.ts` | `selectWorkspace` を公開 API から削除し `currentWorkspace` を `foregroundWorkspaceRef` からの導出値にする（D1/D2）。`listSurfaces()` を全ワークスペース取得に。`createSurface` は `workspace_id` 指定 + レスポンスから新 ref を取得（P7/P9）し、返り値の `workspace_id` を検証（P8）。**`createWorkspace` を D1.1 の 3 手順（create → 両一覧の再取得 → 一覧から引いた `SurfaceLike` で `focus`）に置き換える**。**D2.1 の topology 再取得ループ（T1〜T5 と dirty フラグの 1 回合流）**を持つ。`ViewState` の保持と `focus` の公開 |
+| `App.tsx` | 単数スカラー（`termGrid`/`termHistory`/`lastUpdated`）を `useTerminalFeeds` に委譲。前面フィードだけを `Terminal` に渡す。browser 分岐は現行維持（D5）。D3.1 の 5 表示ケースを `(status, source)` から選ぶ |
 | `components/TabBar.tsx` | 全サーフェスを描画。WS 色ドット、購読ドット、WS 境界の区切り線。`×` の意味は据え置き |
 | `components/Drawer.tsx` | ワークスペース行を展開可能にし、配下にサーフェス行を出す。購読ドットを揃える |
 | `components/Header.tsx` | `ワークスペース名 · 端末名` の 1 行 2 要素表示 |
-| `lib/surface-cache.ts` | C1〜C4（前面のみ / 変化時のみ / Quota の反復退避 / 件数の二次ガード） |
-| `hooks/useWebSocket.ts` / `hooks/useCmux.ts` | 切断時に pending RPC を全件 reject（D10） |
-| `apps/server/src/ws.ts` | `FlatSurface` に `workspace_ref` / `workspace_title` / `workspace_id` を追加（D7） |
+| `lib/surface-cache.ts` | C1〜C6（前面のみ / 変化時のみ / Quota の反復退避 / 件数の二次ガード / **C5 `TextEncoder` 実バイト数での entry 上限と `scrollback`→`text`→`grid` の段階的な切り詰め** / **C6 メモリと localStorage で更新契機を分ける**） |
+| `hooks/useWebSocket.ts` / `hooks/useCmux.ts` | D10 の 4 点すべて。切断時の全件 reject、**アンマウント時の同じ後始末とポーリング `setTimeout` の全 clear**、reject 後の遅延応答の破棄、**`send` を成否が分かる契約に変えて切断中の新規 RPC を即 reject** |
+| `apps/server/src/ws.ts` | `FlatSurface` に `workspace_ref` / `workspace_title` / `workspace_id` を追加し、**`system.tree` の `result.active` から `active` フラグを載せる**（D7）。**`surface.create` に注入している既定を `focus: true` から `focus: false` へ変える**（D6.1） |
 | `CLAUDE.md` | 誤った制約の記述を訂正（D11 / UR6） |
 
 `lib/selection.ts` は**変更しない**が、`initialize` からは**使わない**。
@@ -683,10 +769,14 @@ export interface TerminalFeed {
 
 **新規**
 
-- `lib/__tests__/view-state.test.ts` — 4 つの遷移関数に加えて、**不変条件 I1〜I5 を各遷移の事後条件として検証する**。
+- `lib/__tests__/view-state.test.ts` — 4 つの遷移関数に加えて、**不変条件 I1〜I6 を各遷移の事後条件として検証する**。
   とくに「前面タブの端末が閉じられた」「LRU で追い出された」「reconcile で消えた」「ディープリンクが割り込んだ」
   が連続したときに I1・I2 が保たれること（**browser を前面化しても I2 が破れないこと**を含む）。
-  D3 の決定順と退避順を表のケースごとに固定する
+  D3 の決定順と退避順を表のケースごとに固定し、**terminal の前面消滅 / browser の前面消滅 /
+  `surface.move` による ref 振り直し**の 3 ケースで退避順 2 が
+  `foregroundWorkspaceRef` から正しく計算されることを固定する。
+  **`initialize` が作る購読集合が「terminal の前面 1 件」または空であること**（D6）、
+  **`cap` を小さくしたときに I5 が `cap` を上限として保たれること**も検証する
 - `hooks/__tests__/useTerminalFeeds.test.ts` — サーフェスごとに正しい `surface_id` で `terminal.replay` が飛ぶこと、
   切替時に in-flight が新前面を上書きしないこと、背面では scrollback を取らないこと、
   非購読と browser には一度も投げないこと、**hidden 中は RPC が 0 件**であること（E4）、
@@ -694,22 +784,42 @@ export interface TerminalFeed {
 - `components/__tests__/TabBar.test.tsx` — 現在テストが無い。全サーフェスの描画、
   購読中/非購読のドット出し分け（UR2 の回帰ガード）、browser にドットを出さないこと、
   WS 境界の区切り、切替、`×`、**前面変化でアクティブタブが `scrollIntoView` されること**、
-  **`aria-label` が購読状態を含むこと**
-- D3.1 の 5 ケース（`live` / `warming`・メモリあり / `warming`・キャッシュのみ / `loading` / `error`）を
-  `useTerminalFeeds` と `Terminal` の両方でテストする。とくに**初見で前の端末の画面が残らないこと**、
-  および**初回取得に失敗したフィードが `live` にならず `error` へ移ること**
+  **`aria-label` が購読状態に加えてワークスペース名を含むこと**（別ワークスペースの同名端末が
+  accessible name で区別できること）、**browser タブが「購読対象外」と読み上げられること**
+- D3.1 の 5 ケース（`live`/`memory` / `warming`/`memory` / `warming`/`cache` / `loading`/`none` / `error`）を
+  `useTerminalFeeds` と `Terminal` の両方でテストする。とくに**初見で前の端末の画面が残らないこと**
+- **D3.1 の状態遷移 F1〜F10 を `useTerminalFeeds` で固定する**:
+  `warming -> live`（昇格後の初回成功）、`warming -> error` と `loading -> error`（初回失敗）、
+  **すでに `live` の背面を前面化しても `warming` へ戻らないこと**（F4）、
+  **追い出し → 再昇格で `epoch` が進み、昇格前に開始した RPC の遅延応答が破棄されること**（F7。
+  時刻比較では通ってしまうケースをテストで作る）、WS 切断で全 feed が `error` になりフレームは残ること（F8）、
+  再接続で購読中の全 feed が昇格からやり直されること（F9）、
+  キャッシュ復元が昇格と同一の state 更新で行われること（F2）
 
 **拡張**
 
 - `lib/__tests__/surface-cache.test.ts` — C2（変化時のみ書く）、C3（Quota で複数件退避して成功する / 候補が尽きたら諦める）、C4、
-  C5（直列化後サイズ超過で `scrollback` を削って収める）、C6（背面は書かない・書き込み回数を数える）
+  C5（**`TextEncoder` の実バイト数で測ること**を CJK を含む入力で固定し、`scrollback` を削って収まる /
+  `text` まで削って収まる / **`grid` だけでも超えるので entry を保存しない**の全段階）、
+  C6（背面は書かない・書き込み回数を数える）
 - `hooks/__tests__/useCmux.test.ts` — **`workspace.select` が一度も飛ばないこと**（D1 の回帰ガード）。
   `createSurface` が `workspace_id` を渡し、レスポンスから ref を取り、`workspace_id` 不一致を検出すること。
-  切断時に in-flight の RPC が 10 秒を待たず reject されること（D10）。
-  既存の「`surface_id` を使い `surface_ref` を使わない」ガード（`useCmux.test.ts:44-57`）を複数端末版に拡張
+  既存の「`surface_id` を使い `surface_ref` を使わない」ガード（`useCmux.test.ts:44-57`）を複数端末版に拡張。
+  **D1.1 の 3 条件**: `surface.create` と `workspace.select` が 0 回であること、`workspace.create` が返した
+  surface が PWA の前面になること、surface/workspace 両方の一覧が更新されること（1 本の hook テストで固定する）。
+  **D10 の 4 ケース**: 切断時の既存 pending が 10 秒を待たず reject されること、**切断中に新しく呼んだ RPC が
+  即 reject されること**、**アンマウントで pending と全ポーリング `setTimeout` が片付くこと**、
+  **reject 後に遅れて届いた応答が破棄されること**。
+  **D2.1 の topology 再取得**: T1〜T5 それぞれが再取得を起こすこと、in-flight 中は重ねて投げないこと（single-flight）、
+  **in-flight 中に T1〜T4 が何回来ても follow-up が 1 回だけ走ること**、`hidden` 中は止まること、
+  **失敗しても既存の一覧を捨てないこと**、外部での create/close/`surface.move` が一覧に反映されること、
+  **`closeWorkspace` の後にサーフェス一覧も `reconcile` されること**
 - `components/__tests__/Drawer.test.tsx` — ワークスペース行の展開、サーフェス行タップでの前面化
 - `apps/server/src/__tests__/ws.test.ts` — `flattenSurfaces` がワークスペース属性を付けること、
-  フィルタ省略時に全ワークスペースを返すこと、browser サーフェスの `url` が保持されること
+  フィルタ省略時に全ワークスペースを返すこと、browser サーフェスの `url` が保持されること、
+  **`active === true` が全サーフェス中で高々 1 件であること**（D7。`selected` が複数真になる
+  既存フィクスチャ `ws.test.ts:76,80` を入力にして固定する）、
+  **`surface.create` に注入する既定が `focus: false` であること**（D6.1 の回帰ガード）
 
 **変更しないと明示的に決めたもの**
 
@@ -784,6 +894,43 @@ surface.move surface_id=<UUID> workspace_id=<UUID> -> ★ 目的地に到達（r
 terminal.create workspace_id=BOGUS -> invalid_params "Missing or invalid workspace_id"
 pane.create     workspace_id=BOGUS -> invalid_params "Missing or invalid direction (left|right|up|down)"
 ```
+
+**`focus` が cmux の選択を奪うか（P13。D6.1 の根拠）**:
+
+入力は 3 つで、いずれも非選択ワークスペースを対象にした。A はサーバーが現在注入している
+payload（`ws.ts:104-107`）そのものである。各手順の後に 1 秒待ってから `system.tree` の
+`result.active` を読んだ。
+
+```
+active BEFORE:  workspace_ref=workspace:26  surface_ref=surface:98
+
+A) surface.create { type:'terminal', focus:true,  workspace_id:<非選択WSのUUID> }
+   -> create OK
+   active AFTER: workspace_ref=workspace:1   surface_ref=surface:1
+   => ★ 選択が動いた。focus:true は cmux の選択を奪う
+
+B) surface.create { type:'terminal', focus:false, workspace_id:<同じ非選択WS> }
+   -> create OK
+   active AFTER: workspace_ref=workspace:1   surface_ref=surface:1   （A の後から不変）
+   => 選択は動かない
+
+C) workspace.create {}
+   response keys: window_ref, window_id, group_ref, group_id,
+                  workspace_ref, workspace_id, surface_ref, surface_id
+   => 新ワークスペース配下の surface 数 = 1（既定端末が 1 つ含まれる）
+   => 新ワークスペースは selected=false
+   => レスポンスに type は含まれない  ← D1.1 が一覧を引き直す理由
+```
+
+作成した 2 サーフェスと 1 ワークスペースは同じ実行の `finally` で `surface.close` /
+`workspace.close` して片付けた。
+
+この 3 つを流したスクリプトは `probe13.mjs` として保全してあり
+（`/private/tmp/claude-501/multi-terminal-switch-handoff/probe13.mjs`）、
+§8 の `scripts/cmux-probe.mjs --write` に取り込む。**raw stdout そのものは、この直後に起きた
+macOS TCC の障害（`~/Documents` 全体が EPERM）とセッション再起動で失われている。**
+上の値は障害前に記録した観測値である。再取得したい場合は上記スクリプトを流し直せばよい
+（選択を動かすので、実行後は `restore.mjs` で戻すこと）。
 
 **ref 安定性（P11/P12）**: 他ワークスペースでの作成・削除に対し既存 32 サーフェスの ref は 32/32 不変。
 `surface.move` されたサーフェス自身の ref のみ振り直される。
