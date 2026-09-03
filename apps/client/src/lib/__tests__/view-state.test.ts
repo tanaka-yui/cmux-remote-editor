@@ -82,6 +82,103 @@ function expectInvariants(state: ViewState, surfaces: readonly SurfaceLike[], ca
   else expect(state.foregroundWorkspaceRef).toBe(alive.get(state.foreground)?.workspace_ref)
 }
 
+describe('createSwitcherReducer — feed の遷移 (F5〜F9)', () => {
+  const reduce = createSwitcherReducer(noCache)
+  const surfaces = [term('surface:1'), term('surface:2')]
+  const started = () => reduce(emptyState(), { type: 'initialize', surfaces, preferredRef: 'surface:1', now: 1000 })
+
+  it('F5: warming -> live/memory', () => {
+    const s = reduce(started(), { type: 'feedResult', ref: 'surface:1', epoch: 1, grid: grid('a'), now: 2000 })
+    expect(s.feeds.get('surface:1')).toMatchObject({ status: 'live', source: 'memory', updatedAt: 2000 })
+  })
+
+  it('F5n: 成功だが grid が null なら live/none になり grid と history の両方が捨てられる', () => {
+    let s = reduce(started(), { type: 'feedResult', ref: 'surface:1', epoch: 1, grid: grid('a'), now: 2000 })
+    s = reduce(s, { type: 'feedHistory', ref: 'surface:1', epoch: 1, history: 'old scrollback' })
+    s = reduce(s, { type: 'feedResult', ref: 'surface:1', epoch: 1, grid: null, now: 3000 })
+    expect(s.feeds.get('surface:1')).toMatchObject({ status: 'live', source: 'none', grid: null, history: '' })
+  })
+
+  it('F6: warming -> error / loading -> error。source と描画中フレームは保持', () => {
+    let s = reduce(started(), { type: 'feedResult', ref: 'surface:1', epoch: 1, grid: grid('a'), now: 2000 })
+    s = reduce(s, { type: 'feedError', ref: 'surface:1', epoch: 1 })
+    expect(s.feeds.get('surface:1')).toMatchObject({ status: 'error', source: 'memory' })
+    expect(s.feeds.get('surface:1')?.grid).not.toBeNull()
+    const fresh = reduce(started(), { type: 'feedError', ref: 'surface:1', epoch: 1 })
+    expect(fresh.feeds.get('surface:1')).toMatchObject({ status: 'error', source: 'none' })
+  })
+
+  it('F7: epoch が一致しない action は state を変えない（同一参照を返す）', () => {
+    const s0 = started()
+    const s1 = reduce(s0, { type: 'feedResult', ref: 'surface:1', epoch: 99, grid: grid('a'), now: 2000 })
+    expect(s1).toBe(s0)
+  })
+
+  it('F8: 切断で全 feed が error になりフレームは残る', () => {
+    let s = reduce(started(), { type: 'feedResult', ref: 'surface:1', epoch: 1, grid: grid('a'), now: 2000 })
+    s = reduce(s, { type: 'disconnected' })
+    expect(s.feeds.get('surface:1')).toMatchObject({ status: 'error', source: 'memory' })
+    expect(s.feeds.get('surface:1')?.grid).not.toBeNull()
+  })
+
+  it('F9: 再接続で購読中の全 feed が昇格からやり直される（epoch++、added は空でも走る）', () => {
+    let s = reduce(started(), { type: 'feedResult', ref: 'surface:1', epoch: 1, grid: grid('a'), now: 2000 })
+    s = reduce(s, { type: 'disconnected' })
+    const before = s.feeds.get('surface:1') as TerminalFeed
+    s = reduce(s, { type: 'repromote', now: 5000 })
+    const after = s.feeds.get('surface:1') as TerminalFeed
+    expect(after.epoch).toBe(before.epoch + 1)
+    expect(after.status).toBe('warming')
+    expect(after.source).toBe('memory') // F1（メモリのフレームを持っている）
+    expect(after.promotedAt).toBe(5000)
+  })
+
+  it('F5n -> F8 -> F9 は F3 に入る（cache を復活させない）', () => {
+    const withCacheReduce = createSwitcherReducer(withCache({ 'surface:1': { grid: grid('x'), updatedAt: 500 } }))
+    let s = withCacheReduce(emptyState(), { type: 'initialize', surfaces, preferredRef: 'surface:1', now: 1000 })
+    s = withCacheReduce(s, { type: 'feedResult', ref: 'surface:1', epoch: 1, grid: null, now: 2000 }) // F5n
+    s = withCacheReduce(s, { type: 'disconnected' })
+    s = withCacheReduce(s, { type: 'repromote', now: 3000 })
+    expect(s.feeds.get('surface:1')).toMatchObject({ status: 'loading', source: 'none', grid: null })
+  })
+
+  it('activity は「適用時点の foreground」で決まる（開始時点ではない）', () => {
+    // surface:1 を前面にして 1 回取得 → surface:2 へ切替 → surface:1 の内容が変化
+    let s = reduce(emptyState(), { type: 'initialize', surfaces, preferredRef: 'surface:1', now: 1000 })
+    s = reduce(s, { type: 'feedResult', ref: 'surface:1', epoch: 1, grid: grid('a'), now: 2000 })
+    expect(s.feeds.get('surface:1')?.activity).toBe(false)
+    s = reduce(s, { type: 'select', surface: surfaces[1] as SurfaceLike, now: 3000, cap: MAX_LIVE_SUBSCRIPTIONS })
+    // surface:1 は既購読なので epoch は 1 のまま（F4）
+    expect(s.feeds.get('surface:1')?.epoch).toBe(1)
+    s = reduce(s, { type: 'feedResult', ref: 'surface:1', epoch: 1, grid: grid('b'), now: 4000 })
+    expect(s.feeds.get('surface:1')?.activity).toBe(true) // 背面で変化した
+    // 前面へ戻すと activity は消える
+    s = reduce(s, { type: 'select', surface: surfaces[0] as SurfaceLike, now: 5000, cap: MAX_LIVE_SUBSCRIPTIONS })
+    s = reduce(s, { type: 'feedResult', ref: 'surface:1', epoch: 1, grid: grid('c'), now: 6000 })
+    expect(s.feeds.get('surface:1')?.activity).toBe(false)
+  })
+
+  it('カーソルだけが動いた grid は activity と見なさない (R4)', () => {
+    const withCursor = (text: string, column: number): RenderGrid => ({
+      ...grid(text),
+      cursor: { row: 0, column, visible: true },
+    })
+    let s = reduce(emptyState(), { type: 'initialize', surfaces, preferredRef: 'surface:1', now: 1000 })
+    s = reduce(s, { type: 'feedResult', ref: 'surface:1', epoch: 1, grid: withCursor('a', 0), now: 2000 })
+    s = reduce(s, { type: 'select', surface: surfaces[1] as SurfaceLike, now: 3000, cap: MAX_LIVE_SUBSCRIPTIONS })
+    s = reduce(s, { type: 'feedResult', ref: 'surface:1', epoch: 1, grid: withCursor('a', 5), now: 4000 })
+    expect(s.feeds.get('surface:1')?.activity).toBe(false)
+  })
+
+  it('F10: 追い出しでは status と source を据え置く', () => {
+    let s = reduce(emptyState(), { type: 'initialize', surfaces, preferredRef: 'surface:1', now: 1000 })
+    s = reduce(s, { type: 'feedResult', ref: 'surface:1', epoch: 1, grid: grid('a'), now: 2000 })
+    s = reduce(s, { type: 'select', surface: surfaces[1] as SurfaceLike, now: 3000, cap: 1 })
+    expect(s.view.subscriptions.map((x) => x.ref)).toEqual(['surface:2'])
+    expect(s.feeds.get('surface:1')).toMatchObject({ status: 'live', source: 'memory' })
+  })
+})
+
 describe('initialize', () => {
   it('preferredRef が生存していればそれを前面にし、購読は 1 件だけ作る', () => {
     const surfaces = [term('surface:1'), term('surface:2'), term('surface:3')]

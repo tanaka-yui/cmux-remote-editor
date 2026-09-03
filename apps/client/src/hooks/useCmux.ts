@@ -77,6 +77,21 @@ export function useCmux() {
   const reconcileWith = useCallback((surfaceList: readonly SurfaceLike[]) => {
     dispatch({ type: 'reconcile', surfaces: surfaceList, now: Date.now() })
   }, [])
+  const applyFeedResult = useCallback(
+    (action: { ref: string; epoch: number; grid: RenderGrid | null; now: number }) =>
+      dispatch({ type: 'feedResult', ...action }),
+    [],
+  )
+  const applyFeedHistory = useCallback(
+    (action: { ref: string; epoch: number; history: string }) => dispatch({ type: 'feedHistory', ...action }),
+    [],
+  )
+  const applyFeedError = useCallback(
+    (action: { ref: string; epoch: number }) => dispatch({ type: 'feedError', ...action }),
+    [],
+  )
+  const markDisconnected = useCallback(() => dispatch({ type: 'disconnected' }), [])
+  const repromote = useCallback(() => dispatch({ type: 'repromote', now: Date.now() }), [])
 
   // 保持する state ではなく前面サーフェスからの導出値。
   const currentWorkspace = switcher.view.foregroundWorkspaceRef
@@ -459,6 +474,11 @@ export function useCmux() {
     selectSurface,
     initializeFrom,
     reconcileWith,
+    applyFeedResult,
+    applyFeedHistory,
+    applyFeedError,
+    markDisconnected,
+    repromote,
     requestTopologyRefresh,
     listWorkspaces,
     createWorkspace,

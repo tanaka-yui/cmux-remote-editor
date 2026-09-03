@@ -3,7 +3,7 @@ import { act, renderHook } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { Surface } from '../../lib/cmux-rpc'
-import { TOPOLOGY_POLL_INTERVAL } from '../../lib/view-state'
+import { MAX_LIVE_SUBSCRIPTIONS, TOPOLOGY_POLL_INTERVAL } from '../../lib/view-state'
 import { type TopologySnapshot, useCmux } from '../useCmux'
 
 interface HeldRequest {
@@ -74,6 +74,7 @@ vi.mock('../useWebSocket', () => {
 })
 
 beforeEach(() => {
+  vi.restoreAllMocks()
   hoisted.sent.length = 0
   hoisted.responses = {}
   hoisted.errors = {}
@@ -539,6 +540,52 @@ describe('D3.1 selectSurface の原子性（合成 reducer の結合テスト）
     const first = renderCounts.find((render) => render.view === 'surface:1')
     expect(first?.feedStatus).toBe('warming')
     expect(result.current.feeds.get('surface:1')?.source).toBe('cache')
+  })
+
+  it('retained memory: 追い出し後の再昇格で、最初のコミットが warming/memory になる', () => {
+    let now = 1000
+    vi.spyOn(Date, 'now').mockImplementation(() => now++)
+    const { result } = renderHook(() => useTrackingHook())
+    // 公開 selectSurface は cap = MAX_LIVE_SUBSCRIPTIONS 固定なので、確実に追い出すには
+    // 上限 + 1 件を順に選ぶ必要がある（2 件では追い出されず F4 のままになる）。
+    const surfaces = Array.from({ length: MAX_LIVE_SUBSCRIPTIONS + 1 }, (_, i) => ({
+      ref: `surface:${i}`,
+      type: 'terminal',
+      workspace_ref: 'workspace:1',
+      index: i,
+    }))
+    act(() => {
+      result.current.initializeFrom(surfaces, 'surface:0')
+    })
+    act(() => {
+      result.current.applyFeedResult({
+        ref: 'surface:0',
+        epoch: 1,
+        grid: { columns: 80, rows: 1, styles: [], row_spans: [] },
+        now: 2000,
+      })
+    })
+    expect(result.current.feeds.get('surface:0')).toMatchObject({ status: 'live', source: 'memory' })
+    // surface:1 〜 surface:8 を順に選ぶと、最古の surface:0 が購読集合から外れる
+    for (let i = 1; i <= MAX_LIVE_SUBSCRIPTIONS; i++) {
+      act(() => {
+        result.current.selectSurface(surfaces[i] as Surface)
+      })
+    }
+    expect(result.current.view.subscriptions.map((x) => x.ref)).not.toContain('surface:0')
+    // feed は D3.2 で保持され、status/source は F10 で据え置き
+    expect(result.current.feeds.get('surface:0')).toMatchObject({ status: 'live', source: 'memory' })
+    const epochBefore = result.current.feeds.get('surface:0')?.epoch as number
+
+    renderCounts.length = 0
+    act(() => {
+      result.current.selectSurface(surfaces[0] as Surface)
+    })
+    const first = renderCounts.find((render) => render.view === 'surface:0')
+    // 再昇格なので F1: 最初のコミットで warming/memory になっていること（live のままは不可）
+    expect(first?.feedStatus).toBe('warming')
+    expect(result.current.feeds.get('surface:0')?.source).toBe('memory')
+    expect(result.current.feeds.get('surface:0')?.epoch).toBe(epochBefore + 1)
   })
 
   it('focus / promote は hook の公開 API に出ていない', () => {

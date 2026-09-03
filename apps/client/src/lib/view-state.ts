@@ -200,6 +200,11 @@ export type SwitcherAction =
   | { type: 'select'; surface: SurfaceLike; now: number; cap: number }
   | { type: 'initialize'; surfaces: readonly SurfaceLike[]; preferredRef: string | null; now: number }
   | { type: 'reconcile'; surfaces: readonly SurfaceLike[]; now: number }
+  | { type: 'feedResult'; ref: string; epoch: number; grid: RenderGrid | null; now: number }
+  | { type: 'feedHistory'; ref: string; epoch: number; history: string }
+  | { type: 'feedError'; ref: string; epoch: number }
+  | { type: 'disconnected' }
+  | { type: 'repromote'; now: number }
 
 // F1〜F3。昇格ごとに epoch を進め、論理的な source で排他的に分岐する。
 function promote(
@@ -257,6 +262,78 @@ export function createSwitcherReducer(
   readCache: (ref: string) => CachedScreen | null,
 ): (state: SwitcherState, action: SwitcherAction) => SwitcherState {
   return (state, action) => {
+    // F5 / F5n / F7 / activity
+    if (action.type === 'feedResult') {
+      const feed = state.feeds.get(action.ref)
+      // F7: 昇格前に開始した RPC の遅延応答を、開始時点の epoch で破棄する。
+      if (!feed || feed.epoch !== action.epoch) return state
+
+      // activity は取得開始時ではなく、結果を適用する時点の foreground で判定する。
+      const isForeground = state.view.foreground === action.ref
+      // cursor の移動だけを変化に数えないよう、内容の row_spans だけをハッシュする。
+      const contentHash = action.grid === null ? '' : JSON.stringify(action.grid.row_spans)
+      const changed = contentHash !== '' && feed.contentHash !== '' && contentHash !== feed.contentHash
+      const activity = isForeground ? false : feed.activity || changed
+
+      const next: TerminalFeed =
+        action.grid === null
+          ? {
+              ...feed,
+              grid: null,
+              history: '',
+              contentHash: '',
+              status: 'live',
+              source: 'none',
+              updatedAt: action.now,
+              activity,
+            }
+          : {
+              ...feed,
+              grid: action.grid,
+              contentHash,
+              status: 'live',
+              source: 'memory',
+              updatedAt: action.now,
+              activity,
+            }
+      return { view: state.view, feeds: new Map(state.feeds).set(action.ref, next) }
+    }
+
+    if (action.type === 'feedHistory') {
+      const feed = state.feeds.get(action.ref)
+      if (!feed || feed.epoch !== action.epoch) return state
+      return {
+        view: state.view,
+        feeds: new Map(state.feeds).set(action.ref, { ...feed, history: action.history }),
+      }
+    }
+
+    // F6: source と描画中フレームを保持したまま error にする。
+    if (action.type === 'feedError') {
+      const feed = state.feeds.get(action.ref)
+      if (!feed || feed.epoch !== action.epoch) return state
+      return {
+        view: state.view,
+        feeds: new Map(state.feeds).set(action.ref, { ...feed, status: 'error' }),
+      }
+    }
+
+    // F8: 切断時も最後に描画できたフレームと source を保持する。
+    if (action.type === 'disconnected') {
+      const feeds = new Map<string, TerminalFeed>()
+      for (const [ref, feed] of state.feeds) feeds.set(ref, { ...feed, status: 'error' })
+      return { view: state.view, feeds }
+    }
+
+    // F9: subscriptions が不変でも、再接続では全購読 feed の epoch を進めて再昇格する。
+    if (action.type === 'repromote') {
+      const feeds = new Map(state.feeds)
+      for (const subscription of state.view.subscriptions) {
+        feeds.set(subscription.ref, promote(state.feeds, subscription.ref, action.now, readCache))
+      }
+      return { view: state.view, feeds }
+    }
+
     const nextView =
       action.type === 'select'
         ? focus(state.view, action.surface, action.now, action.cap)
