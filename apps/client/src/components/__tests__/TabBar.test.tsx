@@ -137,6 +137,29 @@ describe('TabBar', () => {
     expect(dot.style.backgroundColor).toContain('--color-warning')
   })
 
+  it('非購読terminalの保持されたerror feedにも警告ドットを出す', () => {
+    const feeds = new Map<string, TerminalFeed>([
+      [
+        'surface:2',
+        {
+          status: 'error',
+          source: 'memory',
+          grid: null,
+          history: '',
+          updatedAt: null,
+          activity: false,
+          contentHash: '',
+          epoch: 1,
+          promotedAt: 0,
+        },
+      ],
+    ])
+    render(<TabBar {...base} subscribedRefs={new Set()} feeds={feeds} />)
+    const tab = screen.getByRole('tab', { name: 'freelance-jp-app / zsh、未購読' })
+    const dot = tab.querySelector('[data-testid="live-dot"]') as HTMLElement
+    expect(dot.style.backgroundColor).toContain('--color-warning')
+  })
+
   it('activity のあるタブはドットが 6px に拡大する', () => {
     const feeds = new Map<string, TerminalFeed>([
       [
@@ -157,5 +180,44 @@ describe('TabBar', () => {
     const { container } = render(<TabBar {...base} feeds={feeds} />)
     const dot = container.querySelector('[data-testid="live-dot"]') as HTMLElement
     expect(dot.style.width).toBe('6px')
+  })
+
+  it('左右矢印でロービングフォーカスを移動する', () => {
+    const onSelect = vi.fn()
+    render(<TabBar {...base} onSelect={onSelect} />)
+    const first = screen.getByRole('tab', { name: 'influencer-platform / zsh、ライブ購読中' })
+    const second = screen.getByRole('tab', { name: 'freelance-jp-app / zsh、未購読' })
+
+    first.focus()
+    expect(first.tabIndex).toBe(0)
+    expect(second.tabIndex).toBe(-1)
+    fireEvent.keyDown(first, { key: 'ArrowRight' })
+    expect(document.activeElement).toBe(second)
+    expect(first.tabIndex).toBe(-1)
+    expect(second.tabIndex).toBe(0)
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it('Space はスクロールせずタブを選択する', () => {
+    const onSelect = vi.fn()
+    render(<TabBar {...base} onSelect={onSelect} />)
+    const tab = screen.getByRole('tab', { name: 'freelance-jp-app / zsh、未購読' })
+
+    expect(fireEvent.keyDown(tab, { key: ' ' })).toBe(false)
+    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ ref: 'surface:2' }))
+  })
+
+  it('× のEnter/Space操作は親タブを選択しない', () => {
+    const onSelect = vi.fn()
+    const onClose = vi.fn()
+    render(<TabBar {...base} onSelect={onSelect} onClose={onClose} />)
+    const close = screen.getAllByLabelText('Close tab')[0] as HTMLElement
+
+    fireEvent.keyDown(close, { key: 'Enter' })
+    fireEvent.click(close)
+    fireEvent.keyDown(close, { key: ' ' })
+    fireEvent.click(close)
+    expect(onClose).toHaveBeenCalledTimes(2)
+    expect(onSelect).not.toHaveBeenCalled()
   })
 })

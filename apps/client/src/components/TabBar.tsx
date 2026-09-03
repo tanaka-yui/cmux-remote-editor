@@ -1,5 +1,5 @@
 import { Plus, X } from 'lucide-react'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import type { Surface } from '../lib/cmux-rpc'
 import type { TerminalFeed } from '../lib/view-state'
@@ -37,11 +37,30 @@ export function TabBar({
   onCreate,
 }: TabBarProps) {
   const activeRef = useRef<HTMLDivElement | null>(null)
+  const [rovingRef, setRovingRef] = useState<string | null>(() => foreground ?? surfaces[0]?.ref ?? null)
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: 前面 ref の変化を 1 箇所で拾ってスクロールする。
   useEffect(() => {
+    setRovingRef(foreground ?? surfaces[0]?.ref ?? null)
     activeRef.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
   }, [foreground])
+
+  const select = (surface: Surface) => {
+    setRovingRef(surface.ref)
+    onSelect(surface)
+  }
+
+  const moveFocus = (tab: HTMLDivElement, direction: -1 | 1) => {
+    const tabs = Array.from(tab.parentElement?.querySelectorAll<HTMLDivElement>('[role="tab"]') ?? [])
+    const currentIndex = tabs.indexOf(tab)
+    if (currentIndex < 0 || tabs.length === 0) return
+    const next = tabs[(currentIndex + direction + tabs.length) % tabs.length]
+    if (!next) return
+    const nextRef = next.dataset.ref
+    if (!nextRef) return
+    setRovingRef(nextRef)
+    next.focus()
+  }
 
   return (
     <div
@@ -61,6 +80,7 @@ export function TabBar({
         const subscribed = surface.type !== 'browser' && subscribedRefs.has(surface.ref)
         const feed = feeds.get(surface.ref)
         const isError = feed?.status === 'error'
+        const hasLiveDot = surface.type !== 'browser' && (subscribed || isError)
         const startsWorkspace = index > 0 && surface.workspace_ref !== surfaces[index - 1]?.workspace_ref
         const liveDotSize = feed?.activity ? 6 : 5
         const titleColor = isError
@@ -77,10 +97,20 @@ export function TabBar({
             aria-label={tabLabel(surface, subscribed)}
             aria-selected={active}
             data-ref={surface.ref}
-            tabIndex={0}
-            onClick={() => onSelect(surface)}
+            tabIndex={surface.ref === rovingRef ? 0 : -1}
+            onClick={() => select(surface)}
             onKeyDown={(event) => {
-              if (event.key === 'Enter' || event.key === ' ') onSelect(surface)
+              if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+                event.preventDefault()
+                moveFocus(event.currentTarget, event.key === 'ArrowLeft' ? -1 : 1)
+                return
+              }
+              if (event.key === ' ') {
+                event.preventDefault()
+                select(surface)
+                return
+              }
+              if (event.key === 'Enter') select(surface)
             }}
             style={{
               display: 'flex',
@@ -118,7 +148,7 @@ export function TabBar({
             >
               {shortTitle(surface.title)}
             </span>
-            {subscribed ? (
+            {hasLiveDot ? (
               <span
                 aria-hidden="true"
                 data-testid="live-dot"
@@ -137,6 +167,7 @@ export function TabBar({
                 event.stopPropagation()
                 onClose(surface.ref)
               }}
+              onKeyDown={(event) => event.stopPropagation()}
               aria-label="Close tab"
               style={{
                 background: 'none',
