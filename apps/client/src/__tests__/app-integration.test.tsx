@@ -405,15 +405,16 @@ describe('App 結合 — マウント後の Push 通知ジャンプ', () => {
 
     fireEvent.click(target)
     fireEvent.click(screen.getByRole('tab', { name: /Initial Workspace \/ initial/ }))
-    await waitFor(() => expect(document.querySelectorAll('[data-testid="live-dot"]').length).toBe(2))
-    const beforeDots = document.querySelectorAll('[data-testid="live-dot"]').length
+    const tablist = screen.getByRole('tablist')
+    await waitFor(() => expect(tablist.querySelectorAll('[data-testid="live-dot"]').length).toBe(2))
+    const beforeDots = tablist.querySelectorAll('[data-testid="live-dot"]').length
 
     act(() => {
       serviceWorker.listener(new MessageEvent('message', { data: { type: 'navigate', workspaceId: 'W26' } }))
     })
 
     expect(screen.getByRole('tab', { name: /Push Workspace \/ push-target/, selected: true })).toBeTruthy()
-    expect(document.querySelectorAll('[data-testid="live-dot"]').length).toBeGreaterThanOrEqual(beforeDots)
+    expect(tablist.querySelectorAll('[data-testid="live-dot"]').length).toBeGreaterThanOrEqual(beforeDots)
     expect(countOf('workspace.select')).toBe(0)
     expect(countOf('surface.focus')).toBe(0)
   })

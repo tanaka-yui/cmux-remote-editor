@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { act, fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { CmuxNotification, Surface, Workspace } from '../../lib/cmux-rpc'
 import { Drawer } from '../Drawer'
@@ -22,7 +22,17 @@ const surfaces: Surface[] = [
     index: 1,
     ref: 'surface:2',
     selected: false,
-    title: '[2] zsh',
+    title: '[2] bash',
+    type: 'terminal',
+    workspace_ref: 'workspace:A',
+    workspace_title: 'influencer-platform',
+    workspace_id: 'w1',
+  },
+  {
+    index: 2,
+    ref: 'surface:3',
+    selected: false,
+    title: '[3] zsh',
     type: 'terminal',
     workspace_ref: 'workspace:B',
     workspace_title: 'freelance-jp-app',
@@ -44,6 +54,12 @@ const base = {
   onNewWorkspace: vi.fn().mockResolvedValue(undefined),
   onClose: vi.fn(),
 }
+
+const defaultInnerWidth = window.innerWidth
+
+afterEach(() => {
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: defaultInnerWidth })
+})
 
 function renderDrawer(notifications: CmuxNotification[] = []) {
   const onCloseWorkspace = vi.fn()
@@ -83,10 +99,10 @@ describe('Drawer workspace row', () => {
     const onSelectSurface = vi.fn()
     render(<Drawer {...base} foreground={null} onSelectSurface={onSelectSurface} />)
     fireEvent.click(screen.getByText('freelance-jp-app'))
-    expect(screen.getByText('[2] zsh')).toBeTruthy()
+    expect(screen.getByText('[3] zsh')).toBeTruthy()
     expect(onSelectSurface).not.toHaveBeenCalled()
     fireEvent.click(screen.getByText('freelance-jp-app'))
-    expect(screen.queryByText('[2] zsh')).toBeNull()
+    expect(screen.queryByText('[3] zsh')).toBeNull()
     expect(onSelectSurface).not.toHaveBeenCalled()
   })
 
@@ -102,36 +118,90 @@ describe('Drawer workspace row', () => {
     const currentSurface = screen.getByRole('button', {
       name: 'influencer-platform / [1] zsh、ライブ購読中',
     })
+    const backgroundSurface = screen.getByRole('button', {
+      name: 'influencer-platform / [2] bash、未購読',
+    })
 
     expect(currentSurface.getAttribute('aria-current')).toBe('true')
+    expect(backgroundSurface.hasAttribute('aria-current')).toBe(false)
   })
 
-  it('独立した閉じるボタンでサーフェスを選択せず閉じる', () => {
+  it('独立した閉じるボタンで選択せずタップした背面サーフェスを閉じる', () => {
     const onSelectSurface = vi.fn()
     const onCloseSurface = vi.fn()
     render(<Drawer {...base} onSelectSurface={onSelectSurface} onCloseSurface={onCloseSurface} />)
     const selectButton = screen.getByRole('button', {
-      name: 'influencer-platform / [1] zsh、未購読',
+      name: 'influencer-platform / [2] bash、未購読',
     })
     const closeButton = screen.getByRole('button', {
-      name: 'influencer-platform / [1] zshを閉じる',
+      name: 'influencer-platform / [2] bashを閉じる',
     })
 
     expect(closeButton.parentElement).toBe(selectButton.parentElement)
     fireEvent.click(closeButton)
-    expect(onCloseSurface).toHaveBeenCalledWith('surface:1')
+    expect(onCloseSurface).toHaveBeenCalledWith('surface:2')
     expect(onSelectSurface).not.toHaveBeenCalled()
+  })
+
+  it('展開中のすべてのサーフェス行に閉じるボタンを描画する', () => {
+    render(<Drawer {...base} />)
+
+    expect(screen.getAllByRole('button', { name: /を閉じる$/ })).toHaveLength(2)
   })
 
   it('既定で展開されるのは前面サーフェスがあるワークスペースだけ', () => {
     render(<Drawer {...base} foreground="surface:1" />)
     expect(screen.getByText('[1] zsh')).toBeTruthy()
-    expect(screen.queryByText('[2] zsh')).toBeNull()
+    expect(screen.getByText('[2] bash')).toBeTruthy()
+    expect(screen.queryByText('[3] zsh')).toBeNull()
+  })
+
+  it('bootstrap 後は前面ワークスペースを展開し、その後の明示的な折りたたみを保つ', () => {
+    const { rerender } = render(
+      <Drawer {...base} workspaces={[]} currentWorkspace={null} surfaces={[]} foreground={null} />,
+    )
+
+    rerender(<Drawer {...base} />)
+    expect(screen.getByText('[1] zsh')).toBeTruthy()
+    expect(screen.getByText('[2] bash')).toBeTruthy()
+    expect(screen.queryByText('[3] zsh')).toBeNull()
+
+    fireEvent.click(screen.getByText('influencer-platform'))
+    rerender(<Drawer {...base} foreground="surface:2" />)
+    expect(screen.queryByText('[1] zsh')).toBeNull()
+    expect(screen.queryByText('[2] bash')).toBeNull()
   })
 
   it('購読中のサーフェス行には行頭にドットを出す（タブ行と表現を揃える）', () => {
     const { container } = render(<Drawer {...base} subscribedRefs={new Set(['surface:1'])} />)
     expect(container.querySelectorAll('[data-testid="live-dot"]').length).toBeGreaterThan(0)
+  })
+})
+
+describe('Drawer desktop visibility', () => {
+  it('閉じている nav だけを inert にする', () => {
+    const { container, rerender } = render(<Drawer {...base} open={false} />)
+    const nav = container.querySelector('nav')
+
+    expect(nav?.hasAttribute('inert')).toBe(true)
+    rerender(<Drawer {...base} open={true} />)
+    expect(nav?.hasAttribute('inert')).toBe(false)
+  })
+})
+
+describe('Drawer mobile dialog', () => {
+  it('幅 375px の Dialog からタップした背面サーフェスを閉じる', () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 375 })
+    const onCloseSurface = vi.fn()
+    render(<Drawer {...base} onCloseSurface={onCloseSurface} />)
+    const dialog = screen.getByRole('dialog', { name: 'ワークスペース' })
+    const closeButton = screen.getByRole('button', {
+      name: 'influencer-platform / [2] bashを閉じる',
+    })
+
+    expect(dialog.contains(closeButton)).toBe(true)
+    fireEvent.click(closeButton)
+    expect(onCloseSurface).toHaveBeenCalledWith('surface:2')
   })
 })
 

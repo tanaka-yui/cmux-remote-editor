@@ -374,10 +374,9 @@ function WorkspaceList({
   const latestNotifs = latestNotificationByWorkspace(notifications)
   // 閉じる確認の対象ワークスペース（null=ダイアログ非表示）。
   const [closing, setClosing] = useState<Workspace | null>(null)
-  const [expanded, setExpanded] = useState(() => {
-    const activeSurface = surfaces.find((surface) => surface.ref === foreground)
-    return activeSurface ? new Set([activeSurface.workspace_ref]) : new Set<string>()
-  })
+  const [touchedExpanded, setTouchedExpanded] = useState<Set<string> | null>(null)
+  const activeSurface = surfaces.find((surface) => surface.ref === foreground)
+  const expanded = touchedExpanded ?? (activeSurface ? new Set([activeSurface.workspace_ref]) : new Set<string>())
 
   return (
     <>
@@ -395,8 +394,8 @@ function WorkspaceList({
               subscribedRefs={subscribedRefs}
               foreground={foreground}
               onToggle={() =>
-                setExpanded((current) => {
-                  const next = new Set(current)
+                setTouchedExpanded((current) => {
+                  const next = new Set(current ?? expanded)
                   if (next.has(ws.ref)) next.delete(ws.ref)
                   else next.add(ws.ref)
                   return next
@@ -553,6 +552,7 @@ export function Drawer({
   if (isDesktop) {
     return (
       <nav
+        inert={!open}
         style={{
           position: 'fixed',
           top: 0,
