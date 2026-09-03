@@ -421,6 +421,16 @@ describe('App — 切替とタブ操作 (UR3/P8)', () => {
     expect(cmux.state.createSurface).toHaveBeenCalledWith('W26')
   })
 
+  it('Drawer の閉じるボタンを closeSurface に配線する', () => {
+    const surface = terminal('surface:1')
+    setForeground(surface, feedOf({ status: 'loading', source: 'none' }))
+    render(<App />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'A / zsh-surface:1を閉じる' }))
+
+    expect(cmux.state.closeSurface).toHaveBeenCalledWith('surface:1')
+  })
+
   it('custom_color が無い複数ワークスペースのタブを既定パレットで区別する', () => {
     const first = terminal('surface:1')
     const second = terminal('surface:2', 'workspace:B', 'w2')

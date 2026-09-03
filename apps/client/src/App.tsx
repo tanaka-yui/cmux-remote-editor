@@ -279,6 +279,9 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
         foreground={foregroundRef}
         subscribedRefs={new Set(view.subscriptions.map((subscription) => subscription.ref))}
         onSelectSurface={selectSurface}
+        onCloseSurface={(ref) => {
+          closeSurface(ref).catch((err) => console.error('[app] close error:', err))
+        }}
         onCloseWorkspace={(ref) => {
           closeWorkspace(ref).catch((err) => console.error('[app] close workspace error:', err))
         }}

@@ -110,7 +110,7 @@ export function TabBar({
               role="tab"
               aria-label={tabLabel(surface, subscribed, hasActivity)}
               aria-selected={active}
-              aria-keyshortcuts="Delete Backspace"
+              aria-keyshortcuts="Delete"
               aria-describedby={`tab-close-description-${surface.ref}`}
               data-ref={surface.ref}
               tabIndex={surface.ref === effectiveRovingRef ? 0 : -1}
@@ -123,7 +123,7 @@ export function TabBar({
                 select(surface)
               }}
               onKeyDown={(event) => {
-                if (event.key === 'Delete' || event.key === 'Backspace') {
+                if (event.key === 'Delete') {
                   event.preventDefault()
                   close(surface, event.currentTarget)
                   return
@@ -209,7 +209,7 @@ export function TabBar({
                   border: 0,
                 }}
               >
-                DeleteまたはBackspaceキーでタブを閉じる
+                Deleteキーでタブを閉じる
               </span>
               <button
                 type="button"
@@ -222,10 +222,14 @@ export function TabBar({
                   background: 'none',
                   border: 'none',
                   color: 'var(--color-text-subtle)',
-                  padding: '0 2px',
+                  width: 24,
+                  height: 24,
+                  padding: 0,
                   cursor: 'pointer',
                   display: 'flex',
                   alignItems: 'center',
+                  justifyContent: 'center',
+                  flexShrink: 0,
                 }}
               >
                 <X size={14} />

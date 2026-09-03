@@ -39,6 +39,7 @@ const base = {
   foreground: 'surface:1',
   subscribedRefs: new Set<string>(),
   onSelectSurface: vi.fn(),
+  onCloseSurface: vi.fn(),
   onCloseWorkspace: vi.fn(),
   onNewWorkspace: vi.fn().mockResolvedValue(undefined),
   onClose: vi.fn(),
@@ -94,6 +95,32 @@ describe('Drawer workspace row', () => {
     render(<Drawer {...base} onSelectSurface={onSelectSurface} />)
     fireEvent.click(screen.getByText('[1] zsh'))
     expect(onSelectSurface).toHaveBeenCalledWith(expect.objectContaining({ ref: 'surface:1' }))
+  })
+
+  it('サーフェス行は前面と購読状態を読み上げられる', () => {
+    render(<Drawer {...base} subscribedRefs={new Set(['surface:1'])} />)
+    const currentSurface = screen.getByRole('button', {
+      name: 'influencer-platform / [1] zsh、ライブ購読中',
+    })
+
+    expect(currentSurface.getAttribute('aria-current')).toBe('true')
+  })
+
+  it('独立した閉じるボタンでサーフェスを選択せず閉じる', () => {
+    const onSelectSurface = vi.fn()
+    const onCloseSurface = vi.fn()
+    render(<Drawer {...base} onSelectSurface={onSelectSurface} onCloseSurface={onCloseSurface} />)
+    const selectButton = screen.getByRole('button', {
+      name: 'influencer-platform / [1] zsh、未購読',
+    })
+    const closeButton = screen.getByRole('button', {
+      name: 'influencer-platform / [1] zshを閉じる',
+    })
+
+    expect(closeButton.parentElement).toBe(selectButton.parentElement)
+    fireEvent.click(closeButton)
+    expect(onCloseSurface).toHaveBeenCalledWith('surface:1')
+    expect(onSelectSurface).not.toHaveBeenCalled()
   })
 
   it('既定で展開されるのは前面サーフェスがあるワークスペースだけ', () => {

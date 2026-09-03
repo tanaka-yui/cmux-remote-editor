@@ -17,6 +17,7 @@ interface DrawerProps {
   foreground: string | null
   subscribedRefs: ReadonlySet<string>
   onSelectSurface: (surface: Surface) => void
+  onCloseSurface: (ref: string) => void
   onCloseWorkspace: (ref: string) => void
   onNewWorkspace: () => Promise<void>
   onClose: () => void
@@ -101,8 +102,10 @@ function WorkspaceItem({
   surfaces,
   expanded,
   subscribedRefs,
+  foreground,
   onToggle,
   onSelectSurface,
+  onCloseSurface,
   onRequestClose,
 }: {
   ws: Workspace
@@ -113,8 +116,10 @@ function WorkspaceItem({
   surfaces: Surface[]
   expanded: boolean
   subscribedRefs: ReadonlySet<string>
+  foreground: string | null
   onToggle: () => void
   onSelectSurface: (surface: Surface) => void
+  onCloseSurface: (ref: string) => void
   onRequestClose: () => void
 }) {
   const color = ws.custom_color ?? paletteColor(index)
@@ -264,45 +269,79 @@ function WorkspaceItem({
       {expanded &&
         surfaces.map((surface) => {
           const subscribed = surface.type !== 'browser' && subscribedRefs.has(surface.ref)
+          const current = surface.ref === foreground
+          const subscriptionLabel = surface.type === 'browser' ? '購読対象外' : subscribed ? 'ライブ購読中' : '未購読'
+          const accessibleName = `${surface.workspace_title} / ${surface.title}`
           return (
-            <button
+            <div
               key={surface.ref}
-              type="button"
-              onClick={() => onSelectSurface(surface)}
               style={{
                 display: 'flex',
                 alignItems: 'center',
-                gap: 6,
                 width: '100%',
                 minWidth: 0,
-                padding: '6px 10px 6px 28px',
-                background: 'none',
-                border: 'none',
-                color: 'var(--color-text-muted)',
-                fontSize: 12,
-                textAlign: 'left',
-                cursor: 'pointer',
+                background: current ? 'var(--color-selected)' : 'none',
               }}
             >
-              {subscribed ? (
-                <span
-                  aria-hidden="true"
-                  data-testid="live-dot"
-                  style={{
-                    width: 5,
-                    height: 5,
-                    borderRadius: '50%',
-                    backgroundColor: 'var(--color-accent)',
-                    flexShrink: 0,
-                  }}
-                />
-              ) : (
-                <span aria-hidden="true" style={{ width: 5, height: 5, flexShrink: 0 }} />
-              )}
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {surface.title}
-              </span>
-            </button>
+              <button
+                type="button"
+                aria-current={current ? 'true' : undefined}
+                aria-label={`${accessibleName}、${subscriptionLabel}`}
+                onClick={() => onSelectSurface(surface)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  flex: 1,
+                  minWidth: 0,
+                  padding: '6px 10px 6px 28px',
+                  background: 'none',
+                  border: 'none',
+                  color: current ? 'var(--color-text)' : 'var(--color-text-muted)',
+                  fontSize: 12,
+                  textAlign: 'left',
+                  cursor: 'pointer',
+                }}
+              >
+                {subscribed ? (
+                  <span
+                    aria-hidden="true"
+                    data-testid="live-dot"
+                    style={{
+                      width: 5,
+                      height: 5,
+                      borderRadius: '50%',
+                      backgroundColor: 'var(--color-accent)',
+                      flexShrink: 0,
+                    }}
+                  />
+                ) : (
+                  <span aria-hidden="true" style={{ width: 5, height: 5, flexShrink: 0 }} />
+                )}
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {surface.title}
+                </span>
+              </button>
+              <button
+                type="button"
+                aria-label={`${accessibleName}を閉じる`}
+                onClick={() => onCloseSurface(surface.ref)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  alignSelf: 'stretch',
+                  width: 36,
+                  background: 'none',
+                  border: 'none',
+                  color: 'var(--color-text-subtle)',
+                  cursor: 'pointer',
+                  flexShrink: 0,
+                }}
+              >
+                <X size={14} />
+              </button>
+            </div>
           )
         })}
     </>
@@ -317,6 +356,7 @@ function WorkspaceList({
   foreground,
   subscribedRefs,
   onSelectSurface,
+  onCloseSurface,
   onCloseWorkspace,
 }: Pick<
   DrawerProps,
@@ -327,6 +367,7 @@ function WorkspaceList({
   | 'foreground'
   | 'subscribedRefs'
   | 'onSelectSurface'
+  | 'onCloseSurface'
   | 'onCloseWorkspace'
 >) {
   const unreadCounts = unreadCountByWorkspace(notifications)
@@ -352,6 +393,7 @@ function WorkspaceList({
               surfaces={surfaces.filter((surface) => surface.workspace_ref === ws.ref)}
               expanded={expanded.has(ws.ref)}
               subscribedRefs={subscribedRefs}
+              foreground={foreground}
               onToggle={() =>
                 setExpanded((current) => {
                   const next = new Set(current)
@@ -361,6 +403,7 @@ function WorkspaceList({
                 })
               }
               onSelectSurface={onSelectSurface}
+              onCloseSurface={onCloseSurface}
               onRequestClose={() => setClosing(ws)}
             />
           </li>
@@ -485,6 +528,7 @@ export function Drawer({
   foreground,
   subscribedRefs,
   onSelectSurface,
+  onCloseSurface,
   onCloseWorkspace,
   onNewWorkspace,
   onClose,
@@ -500,6 +544,7 @@ export function Drawer({
       foreground={foreground}
       subscribedRefs={subscribedRefs}
       onSelectSurface={onSelectSurface}
+      onCloseSurface={onCloseSurface}
       onCloseWorkspace={onCloseWorkspace}
     />
   )

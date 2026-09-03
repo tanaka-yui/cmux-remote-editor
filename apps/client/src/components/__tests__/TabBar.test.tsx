@@ -191,17 +191,21 @@ describe('TabBar', () => {
     expect(idleDot.style.border).toContain('--color-accent')
   })
 
-  it('tablist 内はロービング対象だけをTab停止点にし、閉じる操作はタブのDeleteキーで到達できる', () => {
+  it('tablist 内はロービング対象だけをTab停止点にし、+ は兄弟に保つ', () => {
     const onClose = vi.fn()
     render(<TabBar {...base} onClose={onClose} />)
     const tablist = screen.getByRole('tablist')
+    const createButton = screen.getByRole('button', { name: 'New tab' })
     const activeTab = screen.getByRole('tab', {
       name: 'influencer-platform / zsh、ライブ購読中',
     })
 
     expect(tablist.querySelectorAll('[tabindex="0"]')).toHaveLength(1)
     expect(tablist.querySelectorAll('button[tabindex="-1"]')).toHaveLength(surfaces.length)
-    expect(activeTab.getAttribute('aria-keyshortcuts')).toBe('Delete Backspace')
+    expect([...tablist.querySelectorAll('button')].every((button) => button.tabIndex === -1)).toBe(true)
+    expect(createButton.parentElement).toBe(tablist.parentElement)
+    expect(tablist.contains(createButton)).toBe(false)
+    expect(activeTab.getAttribute('aria-keyshortcuts')).toBe('Delete')
     fireEvent.keyDown(activeTab, { key: 'Delete' })
     expect(onClose).toHaveBeenCalledWith('surface:1')
   })
@@ -210,7 +214,7 @@ describe('TabBar', () => {
     render(<TabBar {...base} />)
     const activeTab = screen.getByRole('tab', {
       name: 'influencer-platform / zsh、ライブ購読中',
-      description: 'DeleteまたはBackspaceキーでタブを閉じる',
+      description: 'Deleteキーでタブを閉じる',
     })
     const closeButtons = screen.getAllByRole('button', { name: 'タブを閉じる' })
 
@@ -218,6 +222,18 @@ describe('TabBar', () => {
     expect(closeButtons.every((button) => button.tabIndex === -1)).toBe(true)
     expect(activeTab.hasAttribute('aria-description')).toBe(false)
     expect(activeTab.getAttribute('aria-describedby')).toBeTruthy()
+  })
+
+  it('Backspace はタブを閉じない', () => {
+    const onClose = vi.fn()
+    render(<TabBar {...base} onClose={onClose} />)
+    const activeTab = screen.getByRole('tab', {
+      name: 'influencer-platform / zsh、ライブ購読中',
+    })
+
+    fireEvent.keyDown(activeTab, { key: 'Backspace' })
+
+    expect(onClose).not.toHaveBeenCalled()
   })
 
   it('左右矢印でロービングフォーカスを移動する', () => {
@@ -259,6 +275,24 @@ describe('TabBar', () => {
     expect(document.activeElement).toBe(third)
   })
 
+  it('最右タブを閉じると直前のタブへフォーカスを移す', () => {
+    const onClose = vi.fn()
+    render(<TabBar {...base} onClose={onClose} />)
+    const first = screen.getByRole('tab', { name: 'influencer-platform / zsh、ライブ購読中' })
+    const second = screen.getByRole('tab', { name: 'freelance-jp-app / zsh、未購読' })
+    const third = screen.getByRole('tab', { name: 'freelance-jp-app / docs、browser、購読対象外' })
+
+    first.focus()
+    fireEvent.keyDown(first, { key: 'ArrowRight' })
+    fireEvent.keyDown(second, { key: 'ArrowRight' })
+    expect(document.activeElement).toBe(third)
+
+    fireEvent.keyDown(third, { key: 'Delete' })
+
+    expect(onClose).toHaveBeenCalledWith('surface:9')
+    expect(document.activeElement).toBe(second)
+  })
+
   it('外部更新でロービング対象が消えても前面タブをTab停止点に戻す', () => {
     const { rerender } = render(<TabBar {...base} />)
     const first = screen.getByRole('tab', { name: 'influencer-platform / zsh、ライブ購読中' })
@@ -293,5 +327,33 @@ describe('TabBar', () => {
     fireEvent.click(closePath)
     expect(onClose).toHaveBeenCalledOnce()
     expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it('閉じるボタン上の Delete は親タブの選択・閉じる処理へ伝播しない', () => {
+    const onSelect = vi.fn()
+    const onClose = vi.fn()
+    render(<TabBar {...base} onSelect={onSelect} onClose={onClose} />)
+    const closeButton = screen.getAllByRole('button', { name: 'タブを閉じる' })[0]
+
+    expect(closeButton).toBeTruthy()
+    if (!closeButton) return
+    fireEvent.keyDown(closeButton, { key: 'Delete' })
+
+    expect(onClose).not.toHaveBeenCalled()
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it('閉じるヒット領域を24px四方以上にし、アイコンとバーのサイズは維持する', () => {
+    render(<TabBar {...base} />)
+    const tablist = screen.getByRole('tablist')
+    const tabBar = tablist.parentElement as HTMLElement
+    const closeButton = screen.getAllByRole('button', { name: 'タブを閉じる' })[0] as HTMLButtonElement
+    const closeIcon = closeButton.querySelector('svg')
+
+    expect(Number.parseFloat(getComputedStyle(closeButton).width)).toBeGreaterThanOrEqual(24)
+    expect(Number.parseFloat(getComputedStyle(closeButton).height)).toBeGreaterThanOrEqual(24)
+    expect(closeIcon?.getAttribute('width')).toBe('14')
+    expect(closeIcon?.getAttribute('height')).toBe('14')
+    expect(tabBar.style.height).toBe('38px')
   })
 })
