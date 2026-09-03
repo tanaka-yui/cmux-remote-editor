@@ -19,6 +19,7 @@ import {
   type SurfaceLike,
   type SwitcherState,
   type TerminalFeed,
+  TOPOLOGY_POLL_INTERVAL,
 } from '../lib/view-state'
 import { type ConnectionStatus, useWebSocket } from './useWebSocket'
 
@@ -30,13 +31,31 @@ interface PendingRequest {
 
 const RPC_TIMEOUT = 10_000
 
+const isDocumentHidden = (): boolean => document.visibilityState === 'hidden'
+
+export interface TopologySnapshot {
+  generation: number
+  surfaces: Surface[]
+  workspaces: Workspace[]
+}
+
 export function useCmux() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
   const [panes, setPanes] = useState<Pane[]>([])
   const [currentPane, setCurrentPane] = useState<string | null>(null)
   const [surfaces, setSurfaces] = useState<Surface[]>([])
   const [notifications, setNotifications] = useState<CmuxNotification[]>([])
+  const [topologyReady, setTopologyReady] = useState(false)
   const pendingRef = useRef(new Map<string, PendingRequest>())
+  const mountedRef = useRef(true)
+  const bootstrappedRef = useRef(false)
+  const inFlightRef = useRef(false)
+  const dirtyRef = useRef(false)
+  const generationRef = useRef(0)
+  const requestSeqRef = useRef(0)
+  const waitersRef = useRef<
+    { seq: number; resolve: (snapshot: TopologySnapshot) => void; reject: (error: Error) => void }[]
+  >([])
   const reducer = useMemo(() => createSwitcherReducer(loadSurfaceScreen), [])
   const [switcher, dispatch] = useReducer(
     reducer,
@@ -52,6 +71,7 @@ export function useCmux() {
     dispatch({ type: 'select', surface, now: Date.now(), cap: MAX_LIVE_SUBSCRIPTIONS })
   }, [])
   const initializeFrom = useCallback((surfaceList: readonly SurfaceLike[], preferredRef: string | null) => {
+    bootstrappedRef.current = true
     dispatch({ type: 'initialize', surfaces: surfaceList, preferredRef, now: Date.now() })
   }, [])
   const reconcileWith = useCallback((surfaceList: readonly SurfaceLike[]) => {
@@ -131,6 +151,16 @@ export function useCmux() {
 
   useEffect(() => () => rejectAllPending('WebSocket unmounted'), [rejectAllPending])
 
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      const waiters = waitersRef.current
+      waitersRef.current = []
+      for (const waiter of waiters) waiter.reject(new Error('unmounted'))
+    }
+  }, [])
+
   const listWorkspaces = useCallback(async () => {
     const result = (await rpc('workspace.list')) as { workspaces: Workspace[] }
     const wsList = result.workspaces ?? []
@@ -178,6 +208,115 @@ export function useCmux() {
     return list
   }, [rpc, reconcileWith])
 
+  const fetchTopology = useCallback(async (): Promise<{ surfaces: Surface[]; workspaces: Workspace[] }> => {
+    const [surfaceResult, workspaceResult] = await Promise.allSettled([
+      rpc('surface.list') as Promise<{ surfaces?: Surface[] }>,
+      rpc('workspace.list') as Promise<{ workspaces?: Workspace[] }>,
+    ])
+    if (surfaceResult.status === 'rejected') throw surfaceResult.reason
+    if (workspaceResult.status === 'rejected') throw workspaceResult.reason
+    return {
+      surfaces: surfaceResult.value.surfaces ?? [],
+      workspaces: workspaceResult.value.workspaces ?? [],
+    }
+  }, [rpc])
+
+  const runRefresh = useCallback(async () => {
+    if (inFlightRef.current) return
+    inFlightRef.current = true
+    try {
+      for (;;) {
+        if (document.visibilityState === 'hidden') {
+          dirtyRef.current = true
+          break
+        }
+
+        dirtyRef.current = false
+        const servedUpTo = requestSeqRef.current
+        let snapshot: { surfaces: Surface[]; workspaces: Workspace[] } | null = null
+        let failure: Error | null = null
+        try {
+          snapshot = await fetchTopology()
+        } catch (error) {
+          failure = error instanceof Error ? error : new Error('topology refresh failed')
+        }
+
+        const waiting = waitersRef.current.filter((waiter) => waiter.seq <= servedUpTo)
+        waitersRef.current = waitersRef.current.filter((waiter) => waiter.seq > servedUpTo)
+
+        if (!mountedRef.current) {
+          for (const waiter of waiting) waiter.reject(new Error('unmounted'))
+          break
+        }
+        if (snapshot === null) {
+          for (const waiter of waiting) waiter.reject(failure ?? new Error('topology refresh failed'))
+        } else if (isDocumentHidden()) {
+          for (const waiter of waiting) waiter.reject(new Error('topology refresh discarded (hidden)'))
+        } else {
+          generationRef.current += 1
+          setSurfaces(snapshot.surfaces)
+          setWorkspaces(snapshot.workspaces)
+          if (bootstrappedRef.current) reconcileWith(snapshot.surfaces)
+          setTopologyReady(true)
+          const applied: TopologySnapshot = { generation: generationRef.current, ...snapshot }
+          for (const waiter of waiting) waiter.resolve(applied)
+        }
+
+        if (!dirtyRef.current) break
+      }
+    } finally {
+      inFlightRef.current = false
+    }
+  }, [fetchTopology, reconcileWith])
+
+  const requestTopologyRefresh = useCallback((): Promise<TopologySnapshot> => {
+    const seq = ++requestSeqRef.current
+    const promise = new Promise<TopologySnapshot>((resolve, reject) => {
+      waitersRef.current.push({ seq, resolve, reject })
+    })
+    dirtyRef.current = true
+    if (document.visibilityState !== 'hidden') void runRefresh()
+    return promise
+  }, [runRefresh])
+
+  useEffect(() => {
+    if (status !== 'connected') return
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let stopped = false
+
+    const arm = (delay: number) => {
+      if (stopped) return
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(() => void tick(), delay)
+    }
+    const tick = async () => {
+      if (stopped || document.visibilityState === 'hidden') return
+      await requestTopologyRefresh().catch(() => undefined)
+      if (!isDocumentHidden()) arm(TOPOLOGY_POLL_INTERVAL)
+    }
+    const onVisibility = () => {
+      if (stopped) return
+      if (document.visibilityState === 'hidden') {
+        if (timer) clearTimeout(timer)
+        timer = undefined
+        return
+      }
+      arm(0)
+    }
+
+    void tick()
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('pageshow', onVisibility)
+    window.addEventListener('focus', onVisibility)
+    return () => {
+      stopped = true
+      if (timer) clearTimeout(timer)
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('pageshow', onVisibility)
+      window.removeEventListener('focus', onVisibility)
+    }
+  }, [status, requestTopologyRefresh])
+
   const createSurface = useCallback(
     async (workspaceId: string): Promise<{ list: Surface[]; misplaced: boolean }> => {
       // workspace_ref は無視される。workspace_id（UUID）だけが作成先指定に使われる。
@@ -187,41 +326,44 @@ export function useCmux() {
       }
       // 無効な UUID はエラーではなく選択中 WS への作成になる。端末は残し、誤配置だけ返す。
       const misplaced = created.workspace_id !== undefined && created.workspace_id !== workspaceId
-      const list = await listSurfaces()
-      const surface = list.find((candidate) => candidate.ref === created.surface_ref)
+      const snapshot = await requestTopologyRefresh().catch(() => null)
+      const list = snapshot?.surfaces ?? surfaces
+      const surface = snapshot?.surfaces.find((candidate) => candidate.ref === created.surface_ref)
       if (surface) selectSurface(surface)
       return { list, misplaced }
     },
-    [rpc, listSurfaces, selectSurface],
+    [rpc, requestTopologyRefresh, selectSurface, surfaces],
   )
 
   const createWorkspace = useCallback(async () => {
     // workspace.create 自体が既定 terminal を作るため、surface.create は重ねて呼ばない。
     const created = (await rpc('workspace.create')) as { surface_ref?: string }
-    const [list] = await Promise.all([listSurfaces(), listWorkspaces()])
-    const surface = list.find((candidate) => candidate.ref === created.surface_ref)
+    const snapshot = await requestTopologyRefresh().catch(() => null)
+    const list = snapshot?.surfaces ?? surfaces
+    const surface = snapshot?.surfaces.find((candidate) => candidate.ref === created.surface_ref)
     if (surface) selectSurface(surface)
     return list
-  }, [rpc, listSurfaces, listWorkspaces, selectSurface])
+  }, [rpc, requestTopologyRefresh, selectSurface, surfaces])
 
   const closeSurface = useCallback(
     async (surfaceRef: string) => {
       // cmux ソケットの surface.close は `surface_id` を読む（`surface_ref` は無視され
       // フォーカス中のサーフェスにフォールバックする）。値は短縮 ref で受理される。
       await rpc('surface.close', { surface_id: surfaceRef })
-      return listSurfaces()
+      const snapshot = await requestTopologyRefresh().catch(() => null)
+      return snapshot?.surfaces ?? surfaces
     },
-    [rpc, listSurfaces],
+    [rpc, requestTopologyRefresh, surfaces],
   )
 
   const closeWorkspace = useCallback(
     async (workspaceRef: string) => {
       // cmux ソケットの workspace.close は `workspace_id` を読む（`workspace_ref` は無視）。
       await rpc('workspace.close', { workspace_id: workspaceRef })
-      const [, wsList] = await Promise.all([listSurfaces(), listWorkspaces()])
-      return wsList
+      const snapshot = await requestTopologyRefresh().catch(() => null)
+      return snapshot?.workspaces ?? workspaces
     },
-    [rpc, listSurfaces, listWorkspaces],
+    [rpc, requestTopologyRefresh, workspaces],
   )
 
   const readText = useCallback(
@@ -304,6 +446,7 @@ export function useCmux() {
 
   return {
     status: status as ConnectionStatus,
+    topologyReady,
     workspaces,
     currentWorkspace,
     panes,
@@ -316,6 +459,7 @@ export function useCmux() {
     selectSurface,
     initializeFrom,
     reconcileWith,
+    requestTopologyRefresh,
     listWorkspaces,
     createWorkspace,
     listPanes,

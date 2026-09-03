@@ -25,6 +25,7 @@ interface SurfaceStub {
 
 interface CmuxStateStub {
   status: 'connected'
+  topologyReady: boolean
   workspaces: WorkspaceStub[]
   currentWorkspace: string | null
   surfaces: SurfaceStub[]
@@ -41,6 +42,11 @@ interface CmuxStateStub {
   focusSurface: (ref: string) => void
   selectSurface: (surface: SurfaceStub) => void
   initializeFrom: (surfaces: SurfaceStub[], preferredRef: string | null) => void
+  requestTopologyRefresh: () => Promise<{
+    generation: number
+    surfaces: SurfaceStub[]
+    workspaces: WorkspaceStub[]
+  }>
   readText: () => Promise<string>
   readGrid: () => Promise<{ columns: number; rows: number; styles: never[]; row_spans: never[] }>
   sendText: () => Promise<void>
@@ -93,6 +99,7 @@ beforeEach(() => {
   } satisfies MediaQueryList)
   cmux.state = {
     status: 'connected',
+    topologyReady: true,
     workspaces: [{ id: 'w1', ref: 'workspace:A', title: 'A', index: 0, selected: true }],
     currentWorkspace: 'workspace:A',
     surfaces: [],
@@ -114,6 +121,7 @@ beforeEach(() => {
     focusSurface: vi.fn(),
     selectSurface: vi.fn(),
     initializeFrom: vi.fn(),
+    requestTopologyRefresh: vi.fn(() => Promise.resolve({ generation: 1, surfaces: [], workspaces: [] })),
     readText: vi.fn(() => Promise.resolve('')),
     readGrid: vi.fn(() => Promise.resolve({ columns: 80, rows: 24, styles: [], row_spans: [] })),
     sendText: vi.fn(() => Promise.resolve()),
@@ -123,16 +131,15 @@ beforeEach(() => {
   }
 })
 
-describe('App surface フェッチ', () => {
-  it('surface.list を workspace_ref なしで取得する', async () => {
+describe('App topology bootstrap', () => {
+  it('topologyReady の一覧だけで initialize し、surface/workspace を直接取得しない', async () => {
     render(<App />)
 
-    // 初期化 RPC の完了を待つ。
-    await waitFor(() => expect(cmux.state.listNotifications).toHaveBeenCalled())
+    await waitFor(() => expect(cmux.state.initializeFrom).toHaveBeenCalledWith([], null))
 
-    expect(cmux.listSurfaceCalls.length).toBeGreaterThan(0)
-    expect(cmux.listSurfaceCalls.every((ref) => ref === undefined)).toBe(true)
-    expect(cmux.state.initializeFrom).toHaveBeenCalledWith([], null)
+    expect(cmux.listSurfaceCalls).toHaveLength(0)
+    expect(cmux.state.listWorkspaces).not.toHaveBeenCalled()
+    expect(cmux.state.listNotifications).toHaveBeenCalledOnce()
   })
 
   it('SW の workspace UUID を購読中 surface に解決して selectSurface する', () => {

@@ -2,7 +2,14 @@
 import { act, renderHook } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { useCmux } from '../useCmux'
+import type { Surface } from '../../lib/cmux-rpc'
+import { TOPOLOGY_POLL_INTERVAL } from '../../lib/view-state'
+import { type TopologySnapshot, useCmux } from '../useCmux'
+
+interface HeldRequest {
+  id: string
+  method: string
+}
 
 // useWebSocket をモックし、send された payload を捕捉する。
 // rpc が解決するよう、送信された各リクエストには成功レスポンスを即座にエコーバックする。
@@ -16,40 +23,68 @@ const hoisted = vi.hoisted(() => ({
   status: { value: 'connected' as 'connected' | 'disconnected' },
   canSend: { value: true },
   swallow: { value: false },
-}))
-
-vi.mock('../useWebSocket', () => ({
-  useWebSocket: ({ onMessage, onClose }: { onMessage: (data: string) => void; onClose?: () => void }) => {
-    hoisted.onMessage.fn = onMessage
-    hoisted.onClose.fn = onClose ?? (() => {})
-    return {
-      status: hoisted.status.value,
-      send: (data: string) => {
-        if (!hoisted.canSend.value) return false
-        hoisted.sent.push(data)
-        if (hoisted.swallow.value) return true
-        const req = JSON.parse(data) as { id: string; method: string }
-        const error = hoisted.errors[req.method]
-        if (error) {
-          hoisted.onMessage.fn(JSON.stringify({ id: req.id, ok: false, error }))
-          return true
-        }
-        const result = hoisted.responses[req.method] ?? {}
-        hoisted.onMessage.fn(JSON.stringify({ id: req.id, ok: true, result }))
-        return true
-      },
-    }
+  gate: {
+    open: true,
+    openFor: {} as Record<string, boolean>,
+    held: [] as HeldRequest[],
+    release: (_method?: string) => {},
   },
 }))
+
+vi.mock('../useWebSocket', () => {
+  const respond = (req: HeldRequest) => {
+    const error = hoisted.errors[req.method]
+    if (error) {
+      hoisted.onMessage.fn(JSON.stringify({ id: req.id, ok: false, error }))
+      return
+    }
+    const result = hoisted.responses[req.method] ?? {}
+    hoisted.onMessage.fn(JSON.stringify({ id: req.id, ok: true, result }))
+  }
+  hoisted.gate.release = (method?: string) => {
+    const released = hoisted.gate.held.filter((req) => method === undefined || req.method === method)
+    hoisted.gate.held = hoisted.gate.held.filter((req) => method !== undefined && req.method !== method)
+    for (const req of released) respond(req)
+  }
+  const send = (data: string) => {
+    if (!hoisted.canSend.value) return false
+    hoisted.sent.push(data)
+    if (hoisted.swallow.value) return true
+    const req = JSON.parse(data) as HeldRequest
+    const methodOpen =
+      req.method in hoisted.gate.openFor ? hoisted.gate.openFor[req.method] === true : hoisted.gate.open
+    const isTopologyList = req.method === 'surface.list' || req.method === 'workspace.list'
+    if (isTopologyList && !methodOpen) {
+      hoisted.gate.held.push(req)
+      return true
+    }
+    respond(req)
+    return true
+  }
+  return {
+    useWebSocket: ({ onMessage, onClose }: { onMessage: (data: string) => void; onClose?: () => void }) => {
+      hoisted.onMessage.fn = onMessage
+      hoisted.onClose.fn = onClose ?? (() => {})
+      return {
+        status: hoisted.status.value,
+        send,
+      }
+    },
+  }
+})
 
 beforeEach(() => {
   hoisted.sent.length = 0
   hoisted.responses = {}
   hoisted.errors = {}
-  hoisted.status.value = 'connected'
+  hoisted.status.value = 'disconnected'
   hoisted.canSend.value = true
   hoisted.swallow.value = false
+  hoisted.gate.open = true
+  hoisted.gate.openFor = {}
+  hoisted.gate.held = []
   localStorage.clear()
+  Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
 })
 
 describe('rpc の登録順（同期 echo の回帰ガード）', () => {
@@ -531,5 +566,548 @@ describe('既存ガードの複数端末版', () => {
       expect(request?.params.surface_ref).toBeUndefined()
       expect(typeof request?.params.surface_id).toBe('string')
     }
+  })
+})
+
+const topologySurface = (ref: string, workspaceRef = 'workspace:1', index = 0): Surface => ({
+  index,
+  ref,
+  selected: false,
+  title: ref,
+  type: 'terminal',
+  workspace_ref: workspaceRef,
+  workspace_title: workspaceRef,
+  workspace_id: workspaceRef.replace('workspace:', 'W'),
+})
+
+describe('D2.1 topology 再取得ループ', () => {
+  beforeEach(() => {
+    hoisted.status.value = 'connected'
+    hoisted.responses['surface.list'] = { surfaces: [] }
+    hoisted.responses['workspace.list'] = { workspaces: [] }
+  })
+
+  it('single-flight: in-flight 中に何回要求しても同時に 2 本投げない', () => {
+    hoisted.status.value = 'disconnected'
+    hoisted.gate.open = false
+    const { result, unmount } = renderHook(() => useCmux())
+
+    act(() => {
+      void result.current.requestTopologyRefresh().catch(() => undefined)
+      void result.current.requestTopologyRefresh().catch(() => undefined)
+      void result.current.requestTopologyRefresh().catch(() => undefined)
+    })
+
+    const listCalls = hoisted.sent.filter((raw) => (JSON.parse(raw) as { method: string }).method === 'surface.list')
+    expect(listCalls).toHaveLength(1)
+    unmount()
+  })
+
+  it('in-flight 中に来た要求は 1 件だけ queue され、完了後に follow-up が 1 回走る', async () => {
+    hoisted.status.value = 'disconnected'
+    hoisted.gate.open = false
+    const { result } = renderHook(() => useCmux())
+    act(() => {
+      void result.current.requestTopologyRefresh()
+    })
+    act(() => {
+      void result.current.requestTopologyRefresh()
+      void result.current.requestTopologyRefresh()
+    })
+
+    await act(async () => {
+      hoisted.gate.release()
+      await Promise.resolve()
+    })
+    await act(async () => {
+      hoisted.gate.release()
+      await Promise.resolve()
+    })
+
+    const listCalls = hoisted.sent.filter((raw) => (JSON.parse(raw) as { method: string }).method === 'surface.list')
+    expect(listCalls).toHaveLength(2)
+  })
+
+  it('follow-up の実行中にさらに要求すると、もう 1 回走る（dirty は開始前に消費する）', async () => {
+    hoisted.status.value = 'disconnected'
+    hoisted.gate.open = false
+    const { result } = renderHook(() => useCmux())
+    act(() => {
+      void result.current.requestTopologyRefresh()
+      void result.current.requestTopologyRefresh()
+    })
+    await act(async () => {
+      hoisted.gate.release()
+      await Promise.resolve()
+    })
+    act(() => {
+      void result.current.requestTopologyRefresh()
+    })
+    await act(async () => {
+      hoisted.gate.release()
+      await Promise.resolve()
+    })
+    await act(async () => {
+      hoisted.gate.release()
+      await Promise.resolve()
+    })
+
+    const listCalls = hoisted.sent.filter((raw) => (JSON.parse(raw) as { method: string }).method === 'surface.list')
+    expect(listCalls).toHaveLength(3)
+  })
+
+  it('requestTopologyRefresh は取得した一覧そのものを返す（React state のクロージャに依存しない）', async () => {
+    hoisted.status.value = 'disconnected'
+    const surface = topologySurface('surface:200', 'workspace:30')
+    hoisted.responses['surface.list'] = { surfaces: [surface] }
+    hoisted.responses['workspace.list'] = {
+      workspaces: [{ id: 'W30', ref: 'workspace:30', title: 'new', index: 0 }],
+    }
+    const { result } = renderHook(() => useCmux())
+    let snapshot: TopologySnapshot | undefined
+
+    await act(async () => {
+      snapshot = await result.current.requestTopologyRefresh()
+    })
+
+    expect(snapshot?.surfaces.map((candidate) => candidate.ref)).toEqual(['surface:200'])
+    expect(snapshot?.workspaces.map((workspace) => workspace.ref)).toEqual(['workspace:30'])
+  })
+
+  it('取得に失敗した refresh は resolve せず reject する（古い一覧を適用済みとして扱わない）', async () => {
+    hoisted.status.value = 'disconnected'
+    hoisted.errors['surface.list'] = { code: 'internal_error', message: 'boom' }
+    const { result } = renderHook(() => useCmux())
+
+    await act(async () => {
+      await expect(result.current.requestTopologyRefresh()).rejects.toThrow('boom')
+    })
+  })
+
+  it('hidden 中に返った応答は state へ反映しない（D2.1 の E4）', async () => {
+    hoisted.status.value = 'disconnected'
+    hoisted.responses['surface.list'] = { surfaces: [topologySurface('surface:1')] }
+    hoisted.gate.open = false
+    const { result } = renderHook(() => useCmux())
+    act(() => {
+      void result.current.requestTopologyRefresh().catch(() => undefined)
+    })
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
+
+    await act(async () => {
+      hoisted.gate.release()
+      await Promise.resolve()
+    })
+
+    expect(result.current.surfaces).toHaveLength(0)
+  })
+
+  it('復帰イベントが重なっても T5 のタイマーは常に 1 本', async () => {
+    vi.useFakeTimers()
+    renderHook(() => useCmux())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+      document.dispatchEvent(new Event('visibilitychange'))
+      window.dispatchEvent(new Event('pageshow'))
+      window.dispatchEvent(new Event('focus'))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    const before = hoisted.sent.length
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(TOPOLOGY_POLL_INTERVAL)
+    })
+
+    const listCalls = hoisted.sent
+      .slice(before)
+      .filter((raw) => (JSON.parse(raw) as { method: string }).method === 'surface.list')
+    expect(listCalls).toHaveLength(1)
+    vi.useRealTimers()
+  })
+
+  it('requestTopologyRefresh は「自分の要求を包含する refresh の適用」まで resolve しない', async () => {
+    hoisted.status.value = 'disconnected'
+    hoisted.gate.open = false
+    const { result } = renderHook(() => useCmux())
+    let first: TopologySnapshot | undefined
+    let second: TopologySnapshot | undefined
+    act(() => {
+      void result.current.requestTopologyRefresh().then((snapshot) => {
+        first = snapshot
+      })
+      void result.current.requestTopologyRefresh().then((snapshot) => {
+        second = snapshot
+      })
+    })
+
+    await act(async () => {
+      hoisted.gate.release()
+      await Promise.resolve()
+    })
+    expect(first?.generation).toBe(1)
+    expect(second).toBeUndefined()
+
+    await act(async () => {
+      hoisted.gate.release()
+      await Promise.resolve()
+    })
+    expect(second?.generation).toBe(2)
+  })
+
+  it('先行 refresh が失敗しても queued waiter は宙に浮かない（follow-up の成功で resolve）', async () => {
+    hoisted.status.value = 'disconnected'
+    hoisted.gate.open = false
+    hoisted.errors['surface.list'] = { code: 'internal_error', message: 'boom' }
+    const { result } = renderHook(() => useCmux())
+    let first: 'resolved' | 'rejected' | undefined
+    let second: 'resolved' | 'rejected' | undefined
+    act(() => {
+      void result.current.requestTopologyRefresh().then(
+        () => {
+          first = 'resolved'
+        },
+        () => {
+          first = 'rejected'
+        },
+      )
+      void result.current.requestTopologyRefresh().then(
+        () => {
+          second = 'resolved'
+        },
+        () => {
+          second = 'rejected'
+        },
+      )
+    })
+
+    await act(async () => {
+      hoisted.gate.release()
+      await Promise.resolve()
+    })
+    expect(first).toBe('rejected')
+    delete hoisted.errors['surface.list']
+    await act(async () => {
+      hoisted.gate.release()
+      await Promise.resolve()
+    })
+    expect(second).toBe('resolved')
+  })
+
+  it('follow-up も失敗すれば queued waiter は reject される（settle せずに残らない）', async () => {
+    hoisted.status.value = 'disconnected'
+    hoisted.gate.open = false
+    hoisted.errors['surface.list'] = { code: 'internal_error', message: 'boom' }
+    const { result } = renderHook(() => useCmux())
+    let second: 'resolved' | 'rejected' | undefined
+    act(() => {
+      void result.current.requestTopologyRefresh().catch(() => undefined)
+      void result.current.requestTopologyRefresh().then(
+        () => {
+          second = 'resolved'
+        },
+        () => {
+          second = 'rejected'
+        },
+      )
+    })
+
+    await act(async () => {
+      hoisted.gate.release()
+      await Promise.resolve()
+    })
+    await act(async () => {
+      hoisted.gate.release()
+      await Promise.resolve()
+    })
+    expect(second).toBe('rejected')
+  })
+
+  it('hidden 中はタイマーを張らず、復帰で再開する', async () => {
+    vi.useFakeTimers()
+    renderHook(() => useCmux())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    const before = hoisted.sent.length
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(vi.getTimerCount()).toBe(0)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(TOPOLOGY_POLL_INTERVAL * 3)
+    })
+    expect(hoisted.sent.length).toBe(before)
+
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(hoisted.sent.length).toBeGreaterThan(before)
+    vi.useRealTimers()
+  })
+
+  it('T1・T2・T3・T5 の各契機が再取得を起こす', async () => {
+    vi.useFakeTimers()
+    const { result } = renderHook(() => useCmux())
+    const count = () =>
+      hoisted.sent.filter((raw) => (JSON.parse(raw) as { method: string }).method === 'surface.list').length
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(count()).toBe(1)
+
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(count()).toBe(2)
+
+    await act(async () => {
+      await result.current.requestTopologyRefresh()
+    })
+    expect(count()).toBe(3)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(TOPOLOGY_POLL_INTERVAL)
+    })
+    expect(count()).toBe(4)
+    vi.useRealTimers()
+  })
+
+  it('外部での create/close/move が一覧へ反映される', async () => {
+    hoisted.status.value = 'disconnected'
+    const { result } = renderHook(() => useCmux())
+    hoisted.responses['surface.list'] = { surfaces: [topologySurface('surface:1')] }
+    await act(async () => {
+      await result.current.requestTopologyRefresh()
+    })
+    act(() => {
+      result.current.initializeFrom(result.current.surfaces, 'surface:1')
+    })
+    hoisted.responses['surface.list'] = {
+      surfaces: [topologySurface('surface:2'), topologySurface('surface:119', 'workspace:26', 1)],
+    }
+
+    await act(async () => {
+      await result.current.requestTopologyRefresh()
+    })
+
+    expect(result.current.surfaces.map((surface) => surface.ref)).toEqual(['surface:2', 'surface:119'])
+    expect(result.current.view.subscriptions.map((subscription) => subscription.ref)).not.toContain('surface:1')
+  })
+
+  it('closeWorkspace の後に surface と workspace の一覧が同じ refresh で更新される', async () => {
+    hoisted.status.value = 'disconnected'
+    const { result } = renderHook(() => useCmux())
+
+    await act(async () => {
+      await result.current.closeWorkspace('workspace:26')
+    })
+
+    const methods = hoisted.sent.map((raw) => (JSON.parse(raw) as { method: string }).method)
+    expect(methods.filter((method) => method === 'surface.list')).toHaveLength(1)
+    expect(methods.filter((method) => method === 'workspace.list')).toHaveLength(1)
+  })
+
+  it('workspace.create の T3 が既存の T5 in-flight と衝突しても、作成後の snapshot を見る', async () => {
+    hoisted.status.value = 'disconnected'
+    hoisted.gate.open = false
+    const createdSurface = topologySurface('surface:200', 'workspace:30')
+    const { result } = renderHook(() => useCmux())
+    act(() => {
+      void result.current.requestTopologyRefresh().catch(() => undefined)
+    })
+    hoisted.responses['workspace.create'] = { workspace_ref: 'workspace:30', surface_ref: 'surface:200' }
+    hoisted.responses['surface.list'] = { surfaces: [createdSurface] }
+    hoisted.responses['workspace.list'] = {
+      workspaces: [{ id: 'W30', ref: 'workspace:30', title: 'new', index: 0 }],
+    }
+
+    await act(async () => {
+      const done = result.current.createWorkspace()
+      hoisted.gate.release()
+      await vi.waitFor(() => {
+        expect(hoisted.gate.held).toHaveLength(2)
+      })
+      hoisted.gate.release()
+      await done
+    })
+
+    expect(result.current.view.foreground).toBe('surface:200')
+  })
+
+  it('mutation 後の follow-up が失敗したら前面を変えず、エラーにもしない', async () => {
+    hoisted.status.value = 'disconnected'
+    hoisted.responses['surface.list'] = { surfaces: [topologySurface('surface:1')] }
+    const { result } = renderHook(() => useCmux())
+    await act(async () => {
+      await result.current.requestTopologyRefresh()
+    })
+    act(() => {
+      result.current.initializeFrom(result.current.surfaces, 'surface:1')
+    })
+    hoisted.responses['workspace.create'] = { workspace_ref: 'workspace:30', surface_ref: 'surface:200' }
+    hoisted.errors['surface.list'] = { code: 'internal_error', message: 'boom' }
+
+    await act(async () => {
+      await expect(result.current.createWorkspace()).resolves.toBeDefined()
+    })
+
+    expect(result.current.view.foreground).toBe('surface:1')
+  })
+
+  it('片方の list が先に失敗しても、もう片方が settle するまで follow-up を始めない', async () => {
+    hoisted.status.value = 'disconnected'
+    hoisted.errors['surface.list'] = { code: 'internal_error', message: 'boom' }
+    hoisted.gate.openFor = { 'surface.list': true, 'workspace.list': false }
+    const { result } = renderHook(() => useCmux())
+    act(() => {
+      void result.current.requestTopologyRefresh().catch(() => undefined)
+      void result.current.requestTopologyRefresh().catch(() => undefined)
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+    const count = (method: string) =>
+      hoisted.sent.filter((raw) => (JSON.parse(raw) as { method: string }).method === method).length
+    expect(count('workspace.list')).toBe(1)
+
+    await act(async () => {
+      hoisted.gate.release('workspace.list')
+      await Promise.resolve()
+    })
+    expect(count('workspace.list')).toBe(2)
+  })
+
+  it('hidden 中に溜めた waiter は unmount で reject される（永久未 settle にしない）', async () => {
+    hoisted.status.value = 'disconnected'
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
+    const { result, unmount } = renderHook(() => useCmux())
+    let settled: 'resolved' | 'rejected' | undefined
+    act(() => {
+      void result.current.requestTopologyRefresh().then(
+        () => {
+          settled = 'resolved'
+        },
+        () => {
+          settled = 'rejected'
+        },
+      )
+    })
+    expect(settled).toBeUndefined()
+
+    await act(async () => {
+      unmount()
+    })
+    expect(settled).toBe('rejected')
+  })
+
+  it('hidden 中の直接 requestTopologyRefresh は RPC を 0 件に保ち、復帰時に回収する', async () => {
+    vi.useFakeTimers()
+    hoisted.status.value = 'connected'
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
+    const { result } = renderHook(() => useCmux())
+    let settled = false
+    act(() => {
+      void result.current.requestTopologyRefresh().then(
+        () => {
+          settled = true
+        },
+        () => {
+          settled = true
+        },
+      )
+    })
+    expect(hoisted.sent).toHaveLength(0)
+    expect(settled).toBe(false)
+
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(settled).toBe(true)
+    vi.useRealTimers()
+  })
+
+  it('in-flight 中に dirty → hidden → 先行応答完了でも、復帰まで follow-up を開始しない', async () => {
+    vi.useFakeTimers()
+    hoisted.gate.open = false
+    const { result } = renderHook(() => useCmux())
+    act(() => {
+      void result.current.requestTopologyRefresh().catch(() => undefined)
+    })
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
+    const before = hoisted.sent.length
+
+    await act(async () => {
+      hoisted.gate.release()
+      await Promise.resolve()
+    })
+    expect(hoisted.sent).toHaveLength(before)
+
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(hoisted.sent.length).toBeGreaterThan(before)
+    await act(async () => {
+      hoisted.gate.release()
+      await Promise.resolve()
+    })
+    vi.useRealTimers()
+  })
+
+  it('失敗しても既存の一覧を捨てない', async () => {
+    hoisted.status.value = 'disconnected'
+    hoisted.responses['surface.list'] = { surfaces: [topologySurface('surface:1')] }
+    const { result } = renderHook(() => useCmux())
+    await act(async () => {
+      await result.current.requestTopologyRefresh()
+    })
+    expect(result.current.surfaces).toHaveLength(1)
+    hoisted.errors['surface.list'] = { code: 'internal_error', message: 'boom' }
+
+    await act(async () => {
+      await result.current.requestTopologyRefresh().catch(() => undefined)
+    })
+
+    expect(result.current.surfaces).toHaveLength(1)
+  })
+
+  it('成功した空 snapshot でも topologyReady が true になる', async () => {
+    hoisted.status.value = 'disconnected'
+    const { result } = renderHook(() => useCmux())
+    expect(result.current.topologyReady).toBe(false)
+
+    await act(async () => {
+      await result.current.requestTopologyRefresh()
+    })
+
+    expect(result.current.topologyReady).toBe(true)
+    expect(result.current.surfaces).toEqual([])
+  })
+
+  it('bootstrap 前の初回 snapshot は reconcile せず、initializeFrom が preferred surface を最初に前面化する', async () => {
+    hoisted.status.value = 'disconnected'
+    const first = topologySurface('surface:1')
+    const preferred = topologySurface('surface:2', 'workspace:2', 1)
+    hoisted.responses['surface.list'] = { surfaces: [first, preferred] }
+    const { result } = renderHook(() => useCmux())
+
+    await act(async () => {
+      await result.current.requestTopologyRefresh()
+    })
+    expect(result.current.view.foreground).toBeNull()
+
+    act(() => {
+      result.current.initializeFrom(result.current.surfaces, 'surface:2')
+    })
+    expect(result.current.view.foreground).toBe('surface:2')
   })
 })

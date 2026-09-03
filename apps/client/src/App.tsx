@@ -23,7 +23,6 @@ import { getAuthToken, saveAuthToken } from './lib/token'
 
 const POLL_INTERVAL = 1000
 const NOTIF_POLL_INTERVAL = 10000
-const INIT_RETRY_INTERVAL = 3000
 const MIN_FONT_SIZE = 9
 const MAX_FONT_SIZE = 28
 const DEFAULT_FONT_SIZE = 13
@@ -54,15 +53,13 @@ export function App() {
 function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
   const {
     status,
+    topologyReady,
     workspaces,
     currentWorkspace,
     surfaces,
     currentSurface,
     notifications,
     view,
-    listWorkspaces,
-    listPanes,
-    listSurfaces,
     createSurface,
     closeSurface,
     closeWorkspace,
@@ -70,6 +67,7 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
     focusSurface,
     selectSurface,
     initializeFrom,
+    requestTopologyRefresh,
     readText,
     readGrid,
     sendText,
@@ -93,6 +91,7 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
   const pushSupported = isPushSupported()
   const [pushEnabled, setPushEnabled] = useState(loadPushEnabled)
   const pollRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined)
+  const topologyInitializedRef = useRef(false)
   // stale-surface エラーで再取得を試みた surface。同一 surface での再取得ループを防ぐ
   // （surface ごとに 1 回だけ resync する）。ポーリング成功でリセット。
   const staleResyncRef = useRef<string | null>(null)
@@ -109,46 +108,31 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
   const currentSurfaceInfo = surfaces.find((s) => s.ref === currentSurface)
   const isBrowserSurface = currentSurfaceInfo?.type === 'browser'
 
-  // Initial data fetch. Retried on failure: a transient cmux outage right
-  // after connecting would otherwise leave the app blank until a manual reload.
+  // 通知は topology と別系統。surface/workspace の初期取得は useCmux の T1 だけが行う。
   useEffect(() => {
     if (status !== 'connected') return
+    listNotifications().catch((err) => console.error('[app] Init notification error:', err))
+  }, [status, listNotifications])
 
-    let cancelled = false
-    let retryTimer: ReturnType<typeof setTimeout> | undefined
+  // 最初の topology snapshot が適用された後に 1 回だけ前面を決める。空配列も正常な初期状態。
+  useEffect(() => {
+    if (!topologyReady || topologyInitializedRef.current) return
+    topologyInitializedRef.current = true
 
-    const init = () => {
-      Promise.all([listWorkspaces(), listSurfaces(), listNotifications()])
-        .then(([workspaceList, surfaceList]) => {
-          if (cancelled) return
+    const params = new URLSearchParams(window.location.search)
+    const workspaceId = params.get('workspace')
+    const workspace = workspaces.find((candidate) => candidate.id === workspaceId)
+    const linkedRef = surfaces.find((surface) => surface.workspace_ref === workspace?.ref)?.ref
+    const storedRef = sessionStorage.getItem(FOREGROUND_STORAGE_KEY)
+    const preferredRef = linkedRef ?? surfaces.find((surface) => surface.ref === storedRef)?.ref ?? null
+    initializeFrom(surfaces, preferredRef)
 
-          // 初回だけ、Push の workspace UUID → 前回 foreground の順で 1 ref に解決する。
-          const params = new URLSearchParams(window.location.search)
-          const workspaceId = params.get('workspace')
-          const workspace = workspaceList.find((candidate) => candidate.id === workspaceId)
-          const linkedRef = surfaceList.find((surface) => surface.workspace_ref === workspace?.ref)?.ref
-          const storedRef = sessionStorage.getItem(FOREGROUND_STORAGE_KEY)
-          const preferredRef = linkedRef ?? surfaceList.find((surface) => surface.ref === storedRef)?.ref ?? null
-          initializeFrom(surfaceList, preferredRef)
-
-          if (workspaceId !== null) {
-            params.delete('workspace')
-            const query = params.toString()
-            window.history.replaceState(null, '', window.location.pathname + (query ? `?${query}` : ''))
-          }
-        })
-        .catch((err) => {
-          console.error('[app] Init error:', err)
-          if (!cancelled) retryTimer = setTimeout(init, INIT_RETRY_INTERVAL)
-        })
+    if (workspaceId !== null) {
+      params.delete('workspace')
+      const query = params.toString()
+      window.history.replaceState(null, '', window.location.pathname + (query ? `?${query}` : ''))
     }
-    init()
-
-    return () => {
-      cancelled = true
-      if (retryTimer) clearTimeout(retryTimer)
-    }
-  }, [status, listWorkspaces, listSurfaces, listNotifications, initializeFrom])
+  }, [topologyReady, workspaces, surfaces, initializeFrom])
 
   // 通知バッジ(Needs input / Permission)の鮮度を保つための定期ポーリング。init で 1 回だけ
   // 取得すると、cmux 側で応答して is_read が立ってもスナップショットが凍結し、応答済みの
@@ -160,26 +144,6 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
     }, NOTIF_POLL_INTERVAL)
     return () => clearInterval(timer)
   }, [status, listNotifications])
-
-  // Re-fetch panes and the all-workspace surface snapshot when foreground workspace changes.
-  useEffect(() => {
-    if (status !== 'connected' || !currentWorkspace) return
-
-    let cancelled = false
-    let retryTimer: ReturnType<typeof setTimeout> | undefined
-
-    const fetchWorkspace = () => {
-      Promise.all([listPanes(currentWorkspace), listSurfaces()]).catch(() => {
-        if (!cancelled) retryTimer = setTimeout(fetchWorkspace, INIT_RETRY_INTERVAL)
-      })
-    }
-    fetchWorkspace()
-
-    return () => {
-      cancelled = true
-      if (retryTimer) clearTimeout(retryTimer)
-    }
-  }, [status, currentWorkspace, listPanes, listSurfaces])
 
   // Surface 切替時はまずキャッシュから即座にハイドレートし、切断/リロード直後でも
   // 「直前までの履歴」を空白にせず表示する。ライブポーリングが繋がれば上書きされる。
@@ -256,7 +220,7 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
           staleResyncRef.current = currentSurface
           // 再取得自体が通信不良で失敗したら、フラグを解除して次ポーリングで再挑戦できるようにする
           // （成功時は据え置き＝同一 surface でのループ防止。ポーリング成功で null にリセットされる）。
-          listSurfaces().catch(() => {
+          requestTopologyRefresh().catch(() => {
             if (staleResyncRef.current === currentSurface) staleResyncRef.current = null
           })
           return
@@ -287,7 +251,7 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
       window.removeEventListener('pageshow', resume)
       window.removeEventListener('focus', resume)
     }
-  }, [status, currentSurface, isBrowserSurface, historyLines, readGrid, readText, listSurfaces])
+  }, [status, currentSurface, isBrowserSurface, historyLines, readGrid, readText, requestTopologyRefresh])
 
   // Mouse mode (from the live grid's DECSET modes) gates tap/click forwarding.
   const mouseMode = deriveMouseMode(termGrid)
@@ -436,7 +400,19 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
             は生き残り、別タブへ切替/このタブを閉じるで復帰できる（最上位境界だと全体が畳まれ、再読み込み
             でも壊れた surface が復元され逃げ場が消える）。resetKey=currentSurface でタブ切替時に自動回復。 */}
         <ErrorBoundary inline resetKey={currentSurface}>
-          {isBrowserSurface ? (
+          {topologyReady && surfaces.length === 0 ? (
+            <div
+              style={{
+                flex: 1,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: 'var(--color-text-muted)',
+              }}
+            >
+              端末がありません
+            </div>
+          ) : isBrowserSurface ? (
             <BrowserView url={currentSurfaceInfo?.url ?? ''} title={currentSurfaceInfo?.title ?? ''} />
           ) : (
             <Terminal
