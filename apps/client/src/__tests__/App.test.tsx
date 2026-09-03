@@ -12,6 +12,7 @@ interface WorkspaceStub {
   title: string
   index: number
   selected: boolean
+  custom_color?: string | null
 }
 
 interface SurfaceStub {
@@ -420,6 +421,45 @@ describe('App — 切替とタブ操作 (UR3/P8)', () => {
     expect(cmux.state.createSurface).toHaveBeenCalledWith('W26')
   })
 
+  it('custom_color が無い複数ワークスペースのタブを既定パレットで区別する', () => {
+    const first = terminal('surface:1')
+    const second = terminal('surface:2', 'workspace:B', 'w2')
+    cmux.state.workspaces = [
+      { id: 'w1', ref: 'workspace:A', title: 'A', index: 0, selected: true },
+      { id: 'w2', ref: 'workspace:B', title: 'B', index: 1, selected: false },
+    ]
+    cmux.state.surfaces = [first, second]
+    setForeground(first, feedOf({ status: 'loading', source: 'none' }))
+    render(<App />)
+
+    const firstDot = screen.getByRole('tab', { name: /A \/ zsh-surface:1/ }).querySelector('span') as HTMLElement
+    const secondDot = screen.getByRole('tab', { name: /B \/ zsh-surface:2/ }).querySelector('span') as HTMLElement
+    expect(firstDot.style.backgroundColor).toBe('rgb(74, 92, 24)')
+    expect(secondDot.style.backgroundColor).toBe('rgb(192, 57, 43)')
+  })
+
+  it('端末ゼロでも先頭ワークスペースの UUID を指定してタブを作る', () => {
+    cmux.state.workspaces = [
+      { id: 'W-first', ref: 'workspace:first', title: 'First', index: 0, selected: true },
+      { id: 'W-second', ref: 'workspace:second', title: 'Second', index: 1, selected: false },
+    ]
+    render(<App />)
+
+    fireEvent.click(screen.getByLabelText('New tab'))
+
+    expect(cmux.state.createSurface).toHaveBeenCalledWith('W-first')
+  })
+
+  it('端末もワークスペースも無いときは作成先が無いことを表示する', () => {
+    cmux.state.workspaces = []
+    render(<App />)
+
+    fireEvent.click(screen.getByLabelText('New tab'))
+
+    expect(screen.getByRole('alert').textContent).toContain('作成先のワークスペースがありません')
+    expect(cmux.state.createSurface).not.toHaveBeenCalled()
+  })
+
   it('P8 の誤配置は端末を残したまま警告し、自動 rollback しない', async () => {
     const surface = terminal('surface:1', 'workspace:26', 'W26')
     setForeground(surface, feedOf({ status: 'live', source: 'memory', grid: gridOf('kept-terminal') }))
@@ -467,7 +507,9 @@ describe('App コンテンツのエラー境界分離', () => {
     render(<App />)
 
     expect(screen.getByLabelText('New tab')).toBeTruthy()
-    expect(screen.getByLabelText('Close tab')).toBeTruthy()
+    const tab = screen.getByRole('tab', { name: /A \/ zsh-surface:1/ })
+    expect(tab.getAttribute('aria-keyshortcuts')).toContain('Delete')
+    expect(screen.getByTestId('close-tab-hit')).toBeTruthy()
     errSpy.mockRestore()
   })
 })

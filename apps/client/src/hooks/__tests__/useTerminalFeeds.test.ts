@@ -335,6 +335,36 @@ describe('useTerminalFeeds — 実行規律', () => {
     )
   })
 
+  it('readGrid の待機中に ref が poll plan から消えたら遅延応答を反映しない', async () => {
+    let resolveGrid: ((grid: RenderGrid | null) => void) | undefined
+    const readGrid = mockReadGrid(
+      () =>
+        new Promise<RenderGrid | null>((resolve) => {
+          resolveGrid = resolve
+        }),
+    )
+    const h = harness({ subscribed: ['surface:1'], visible: ['surface:1'], pinned: false, readGrid })
+    const { rerender } = renderHook((props: Parameters<typeof useTerminalFeeds>[0]) => useTerminalFeeds(props), {
+      initialProps: h.props,
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    rerender({
+      ...h.props,
+      view: { subscriptions: [], foreground: null, foregroundWorkspaceRef: null },
+      visibleRefs: [],
+    })
+    await act(async () => {
+      resolveGrid?.(gridOf('removed'))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect(h.applyFeedResult).not.toHaveBeenCalled()
+    expect(h.applyFeedError).not.toHaveBeenCalled()
+  })
+
   it('取得待機中に hidden になってから返った rejection は feed も T4 も更新しない', async () => {
     let rejectGrid: ((e: Error) => void) | undefined
     const readGrid = mockReadGrid(() => Promise.resolve(gridOf('x'))).mockImplementationOnce(
@@ -557,6 +587,22 @@ describe('useTerminalFeeds — 状態遷移', () => {
     expect(h.applyFeedError).toHaveBeenCalledWith(expect.objectContaining({ ref: 'surface:1', epoch: 1 }))
   })
 
+  it('replay 成功後に read_text だけ失敗しても live grid を error にしない', async () => {
+    const h = harness({ subscribed: ['surface:1'], visible: ['surface:1'] })
+    h.readText.mockRejectedValueOnce(new Error('read_text timeout'))
+    renderHook(() => useTerminalFeeds(h.props))
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    expect(h.applyFeedResult).toHaveBeenCalledWith(
+      expect.objectContaining({ ref: 'surface:1', epoch: 1, grid: expect.objectContaining({ rows: 1 }) }),
+    )
+    expect(h.applyFeedHistory).not.toHaveBeenCalled()
+    expect(h.applyFeedError).not.toHaveBeenCalled()
+  })
+
   it('F7: replay 待機中に epoch が進んだ成功応答は cache と read_text を更新しない', async () => {
     let resolveGrid: ((grid: RenderGrid | null) => void) | undefined
     const readGrid = mockReadGrid(() => Promise.resolve(gridOf('next'))).mockImplementationOnce(
@@ -676,5 +722,29 @@ describe('useTerminalFeeds — stale 検出と永続化', () => {
     expect(written.every((k) => k === 'cmux-surface-cache:surface:1')).toBe(true)
     // 内容が変化していないので、6 秒間で書き込みは 1 回だけ
     expect(written).toHaveLength(1)
+  })
+
+  it('poll plan から外れた ref の重複排除値を破棄する', async () => {
+    const setItem = vi.spyOn(localStorage, 'setItem')
+    const h = harness({ subscribed: ['surface:1'], visible: ['surface:1'], pinned: false })
+    const { rerender } = renderHook((props: Parameters<typeof useTerminalFeeds>[0]) => useTerminalFeeds(props), {
+      initialProps: h.props,
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    rerender({
+      ...h.props,
+      view: { subscriptions: [], foreground: null, foregroundWorkspaceRef: null },
+      visibleRefs: [],
+    })
+    rerender(h.props)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    const writes = setItem.mock.calls.filter((call) => call[0] === 'cmux-surface-cache:surface:1')
+    expect(writes).toHaveLength(2)
   })
 })

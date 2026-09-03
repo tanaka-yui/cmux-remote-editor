@@ -76,7 +76,18 @@ export function Header({
           {workspaceTitle ?? 'cmux Remote'}
         </span>
         {surfaceTitle && <span style={{ margin: '0 6px', color: 'var(--color-text-muted)', flexShrink: 0 }}>·</span>}
-        {surfaceTitle && <span style={{ color: 'var(--color-text)', flexShrink: 0 }}>{surfaceTitle}</span>}
+        {surfaceTitle && (
+          <span
+            style={{
+              minWidth: 0,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              color: 'var(--color-text)',
+            }}
+          >
+            {surfaceTitle}
+          </span>
+        )}
       </div>
       <div style={{ marginLeft: 8, display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
         <ConnectionIndicator status={status} freshness={freshness} />

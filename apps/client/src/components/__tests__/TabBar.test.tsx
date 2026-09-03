@@ -100,7 +100,7 @@ describe('TabBar', () => {
     const onClose = vi.fn()
     const onCreate = vi.fn()
     render(<TabBar {...base} onClose={onClose} onCreate={onCreate} />)
-    fireEvent.click(screen.getAllByLabelText('Close tab')[0] as HTMLElement)
+    fireEvent.click(screen.getAllByTestId('close-tab-hit')[0] as HTMLElement)
     expect(onClose).toHaveBeenCalledWith('surface:1')
     fireEvent.click(screen.getByLabelText('New tab'))
     expect(onCreate).toHaveBeenCalled()
@@ -160,7 +160,7 @@ describe('TabBar', () => {
     expect(dot.style.backgroundColor).toContain('--color-warning')
   })
 
-  it('activity のあるタブはドットが 6px に拡大する', () => {
+  it('activity を塗りと読み上げで伝え、更新なしは輪郭で区別する', () => {
     const feeds = new Map<string, TerminalFeed>([
       [
         'surface:1',
@@ -177,9 +177,34 @@ describe('TabBar', () => {
         },
       ],
     ])
-    const { container } = render(<TabBar {...base} feeds={feeds} />)
-    const dot = container.querySelector('[data-testid="live-dot"]') as HTMLElement
-    expect(dot.style.width).toBe('6px')
+    const { container, rerender } = render(<TabBar {...base} feeds={feeds} />)
+    const activeTab = screen.getByRole('tab', {
+      name: 'influencer-platform / zsh、ライブ購読中、更新あり',
+    })
+    const activeDot = activeTab.querySelector('[data-testid="live-dot"]') as HTMLElement
+    expect(activeDot.style.backgroundColor).toContain('--color-accent')
+    expect(activeDot.style.border).not.toContain('--color-accent')
+
+    rerender(<TabBar {...base} />)
+    const idleDot = container.querySelector('[data-testid="live-dot"]') as HTMLElement
+    expect(idleDot.style.backgroundColor).toBe('transparent')
+    expect(idleDot.style.border).toContain('--color-accent')
+  })
+
+  it('tablist 内はロービング対象だけをTab停止点にし、閉じる操作はタブのDeleteキーで到達できる', () => {
+    const onClose = vi.fn()
+    render(<TabBar {...base} onClose={onClose} />)
+    const tablist = screen.getByRole('tablist')
+    const activeTab = screen.getByRole('tab', {
+      name: 'influencer-platform / zsh、ライブ購読中',
+    })
+
+    expect(tablist.querySelectorAll('[tabindex="0"]')).toHaveLength(1)
+    expect(tablist.querySelector('button')).toBeNull()
+    expect(activeTab.getAttribute('aria-keyshortcuts')).toBe('Delete Backspace')
+    expect(activeTab.getAttribute('aria-description')).toBe('タブを閉じる')
+    fireEvent.keyDown(activeTab, { key: 'Delete' })
+    expect(onClose).toHaveBeenCalledWith('surface:1')
   })
 
   it('左右矢印でロービングフォーカスを移動する', () => {
@@ -207,17 +232,14 @@ describe('TabBar', () => {
     expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ ref: 'surface:2' }))
   })
 
-  it('× のEnter/Space操作は親タブを選択しない', () => {
+  it('× のポインター操作は親タブを選択しない', () => {
     const onSelect = vi.fn()
     const onClose = vi.fn()
     render(<TabBar {...base} onSelect={onSelect} onClose={onClose} />)
-    const close = screen.getAllByLabelText('Close tab')[0] as HTMLElement
+    const close = screen.getAllByTestId('close-tab-hit')[0] as HTMLElement
 
-    fireEvent.keyDown(close, { key: 'Enter' })
     fireEvent.click(close)
-    fireEvent.keyDown(close, { key: ' ' })
-    fireEvent.click(close)
-    expect(onClose).toHaveBeenCalledTimes(2)
+    expect(onClose).toHaveBeenCalledOnce()
     expect(onSelect).not.toHaveBeenCalled()
   })
 })

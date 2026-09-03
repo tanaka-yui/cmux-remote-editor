@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest'
 import type { RenderGrid } from '../render-grid'
 import type { CachedScreen } from '../surface-cache'
 import {
+  BACKGROUND_POLL_INTERVAL,
+  BACKGROUND_STAGGER,
   createSwitcherReducer,
   describeFeed,
+  FOREGROUND_POLL_INTERVAL,
   focus,
   initialize,
   MAX_LIVE_SUBSCRIPTIONS,
@@ -13,6 +16,7 @@ import {
   type SurfaceLike,
   type SwitcherState,
   type TerminalFeed,
+  TOPOLOGY_POLL_INTERVAL,
   type ViewState,
 } from '../view-state'
 
@@ -508,6 +512,20 @@ describe('createSwitcherReducer — added 規則', () => {
     expect(feed.grid).not.toBeNull()
   })
 
+  it('F2 の cache scrollback から可視 grid と重なる末尾を除く', () => {
+    const reduce = createSwitcherReducer(
+      withCache({ 'surface:1': { grid: grid('visible'), scrollback: 'old history\nvisible', updatedAt: 500 } }),
+    )
+    const s = reduce(emptyState(), {
+      type: 'initialize',
+      surfaces: [term('surface:1')],
+      preferredRef: null,
+      now: 1000,
+    })
+
+    expect(s.feeds.get('surface:1')?.history).toBe('old history')
+  })
+
   it('F4: すでに live/memory の購読中 terminal を前面化しても feeds と epoch が不変', () => {
     const reduce = createSwitcherReducer(noCache)
     const surfaces = [term('surface:1'), term('surface:2')]
@@ -718,5 +736,16 @@ describe('createSwitcherReducer — added 規則', () => {
     expect(next.feeds.size).toBe(MAX_RETAINED_FEEDS)
     expect(next.feeds.has('surface:0')).toBe(true)
     expect(next.feeds.has('surface:1')).toBe(false)
+  })
+})
+
+describe('multi-terminal switcher の負荷・保持定数', () => {
+  it('実測で決めた購読上限・保持上限・poll間隔を固定する', () => {
+    expect(MAX_LIVE_SUBSCRIPTIONS).toBe(8)
+    expect(MAX_RETAINED_FEEDS).toBe(24)
+    expect(FOREGROUND_POLL_INTERVAL).toBe(1000)
+    expect(BACKGROUND_POLL_INTERVAL).toBe(3000)
+    expect(BACKGROUND_STAGGER).toBe(400)
+    expect(TOPOLOGY_POLL_INTERVAL).toBe(5000)
   })
 })

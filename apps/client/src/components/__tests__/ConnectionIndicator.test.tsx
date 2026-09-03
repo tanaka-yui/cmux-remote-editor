@@ -42,6 +42,23 @@ describe('ConnectionIndicator', () => {
     expect(screen.getByText('接続なし · 最終 12:35')).toBeTruthy()
   })
 
+  it('切断猶予中に再接続が始まっても Connecting を瞬間表示しない', () => {
+    vi.useFakeTimers()
+    const { rerender } = render(<ConnectionIndicator status="connected" freshness={null} />)
+
+    rerender(<ConnectionIndicator status="disconnected" freshness="接続なし · 最終 12:34" />)
+    act(() => vi.advanceTimersByTime(1000))
+    rerender(<ConnectionIndicator status="connecting" freshness={null} />)
+
+    expect(screen.getByText('Connected')).toBeTruthy()
+    expect(screen.queryByText('Connecting...')).toBeNull()
+
+    rerender(<ConnectionIndicator status="connected" freshness={null} />)
+    act(() => vi.advanceTimersByTime(2000))
+    expect(screen.getByText('Connected')).toBeTruthy()
+    expect(screen.queryByText('Connecting...')).toBeNull()
+  })
+
   it('freshness が null なら何も表示しない', () => {
     render(<ConnectionIndicator status="connected" freshness={null} />)
     expect(screen.queryByText(/更新:|接続なし|オフライン時点/)).toBeNull()

@@ -415,6 +415,7 @@ describe('App 結合 — マウント後の Push 通知ジャンプ', () => {
     expect(screen.getByRole('tab', { name: /Push Workspace \/ push-target/, selected: true })).toBeTruthy()
     expect(document.querySelectorAll('[data-testid="live-dot"]').length).toBeGreaterThanOrEqual(beforeDots)
     expect(countOf('workspace.select')).toBe(0)
+    expect(countOf('surface.focus')).toBe(0)
   })
 
   it('workspace ref を渡しても UUID として解決しない', async () => {

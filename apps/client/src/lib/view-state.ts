@@ -3,6 +3,7 @@
 // 指す」状態を作れてしまうため、1 つの値と 4 つの遷移関数に閉じ込める。
 
 import type { RenderGrid } from './render-grid'
+import { stripVisibleScreen, visibleLineCount } from './scrollback'
 import type { CachedScreen } from './surface-cache'
 
 export const MAX_LIVE_SUBSCRIPTIONS = 8
@@ -224,7 +225,9 @@ function promote(
       return {
         ...base,
         grid: cached.grid ?? null,
-        history: cached.scrollback ?? cached.text ?? '',
+        history: cached.grid
+          ? stripVisibleScreen(cached.scrollback ?? cached.text ?? '', visibleLineCount(cached.grid))
+          : (cached.scrollback ?? cached.text ?? ''),
         updatedAt: cached.updatedAt,
         contentHash: cached.grid === undefined ? '' : JSON.stringify(cached.grid.row_spans),
         status: 'warming',

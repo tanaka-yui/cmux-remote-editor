@@ -37,6 +37,25 @@ MockWebSocket.CLOSED = 3
 const sockets: MockWebSocketInstance[] = []
 
 describe('useWebSocket', () => {
+  it('socket が閉じていると send は false を返して送信しない', () => {
+    vi.stubGlobal('WebSocket', MockWebSocket)
+    const { result, unmount } = renderHook(() => useWebSocket({ url: 'ws://example.test/ws', onMessage: () => {} }))
+    const socket = sockets[0]
+
+    try {
+      expect(socket).toBeDefined()
+      if (!socket) return
+      socket.readyState = MockWebSocket.CLOSED
+
+      expect(result.current.send('must not send')).toBe(false)
+      expect(socket.sent).toEqual([])
+    } finally {
+      unmount()
+      vi.unstubAllGlobals()
+      sockets.length = 0
+    }
+  })
+
   it('古い socket の close は現行 socket の pending RPC を reject する onClose を呼ばない', () => {
     vi.useFakeTimers()
     vi.stubGlobal('WebSocket', MockWebSocket)

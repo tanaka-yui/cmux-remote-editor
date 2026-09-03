@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ConnectionStatus } from '../hooks/useWebSocket'
 
-// connected からの一瞬の切断（即再接続）でステータス表示をチラつかせない猶予時間（ms）。
+// connected 表示中の一瞬の切断・再接続でステータス表示をチラつかせない猶予時間（ms）。
 const OFFLINE_GRACE_MS = 2000
 
 interface ConnectionIndicatorProps {
@@ -17,8 +17,8 @@ const STATUS_CONFIG: Record<ConnectionStatus, { label: string; color: string }> 
 
 // 接続状態（ドット＋ラベル）とオフラインの鮮度表示。Header の右側に置く。
 export function ConnectionIndicator({ status, freshness }: ConnectionIndicatorProps) {
-  // 接続済みからの一瞬の切断はチラつかせない。connected は即時、初回接続中(まだ未接続)も即時、
-  // connected→切断のときだけ OFFLINE_GRACE_MS 遅延して反映する。
+  // 接続済みからの一瞬の切断はチラつかせない。connected は即時、初回接続中(まだ未接続)も即時。
+  // connected 表示中の disconnected / connecting だけ OFFLINE_GRACE_MS 遅延して反映する。
   const [shownStatus, setShownStatus] = useState<ConnectionStatus>(status)
   const [shownFreshness, setShownFreshness] = useState<string | null>(freshness)
   const latestFreshness = useRef(freshness)
@@ -30,7 +30,7 @@ export function ConnectionIndicator({ status, freshness }: ConnectionIndicatorPr
 
   useEffect(() => {
     if (status === shownStatus) return
-    if (shownStatus !== 'connected' || status !== 'disconnected') {
+    if (shownStatus !== 'connected' || status === 'connected') {
       setShownStatus(status)
       setShownFreshness(latestFreshness.current)
       return

@@ -41,7 +41,7 @@ const DEFAULT_PALETTE = [
   '#9B59B6',
 ]
 
-function paletteColor(index: number): string {
+export function paletteColor(index: number): string {
   return DEFAULT_PALETTE[index % DEFAULT_PALETTE.length] ?? '#3E4B5E'
 }
 

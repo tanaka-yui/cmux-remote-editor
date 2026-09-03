@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { BrowserView } from './components/BrowserView'
-import { DESKTOP_BREAKPOINT, Drawer, SIDEBAR_WIDTH } from './components/Drawer'
+import { DESKTOP_BREAKPOINT, Drawer, paletteColor, SIDEBAR_WIDTH } from './components/Drawer'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { Header } from './components/Header'
 import { InputBar } from './components/InputBar'
@@ -314,22 +314,27 @@ function Main({ theme }: { theme: ReturnType<typeof useTheme> }) {
           foreground={foregroundRef}
           subscribedRefs={new Set(view.subscriptions.map((subscription) => subscription.ref))}
           feeds={feeds}
-          workspaceColor={(workspaceRef) =>
-            workspaces.find((workspace) => workspace.ref === workspaceRef)?.custom_color ?? 'var(--color-text-muted)'
-          }
+          workspaceColor={(workspaceRef) => {
+            const index = workspaces.findIndex((workspace) => workspace.ref === workspaceRef)
+            const workspace = workspaces[index]
+            return workspace?.custom_color ?? paletteColor(index < 0 ? 0 : index)
+          }}
           onSelect={selectSurface}
           onClose={(ref) => {
             closeSurface(ref).catch((err) => console.error('[app] close error:', err))
           }}
           onCreate={() => {
-            if (foregroundSurface) {
-              setCreateWarning(null)
-              createSurface(foregroundSurface.workspace_id)
-                .then((result) => {
-                  if (result.misplaced) setCreateWarning('別のワークスペースに作成されました')
-                })
-                .catch((err) => console.error('[app] create error:', err))
+            setCreateWarning(null)
+            const workspaceId = foregroundSurface?.workspace_id ?? workspaces[0]?.id
+            if (!workspaceId) {
+              setCreateWarning('作成先のワークスペースがありません')
+              return
             }
+            createSurface(workspaceId)
+              .then((result) => {
+                if (result.misplaced) setCreateWarning('別のワークスペースに作成されました')
+              })
+              .catch((err) => console.error('[app] create error:', err))
           }}
         />
 

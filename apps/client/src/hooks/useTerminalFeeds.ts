@@ -59,6 +59,16 @@ export function useTerminalFeeds(props: UseTerminalFeedsProps): void {
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: planKey が plan の ref・順序・前背面 interval を代表し、更新頻度の高い値は latest から読む。
   useEffect(() => {
+    // reconcile などで poll plan から外れた ref の大きな JSON/text を保持し続けない。
+    // 購読中の ref は内容重複を判定するため、そのまま維持する。
+    const pollableRefs = new Set(plan.map((entry) => entry.ref))
+    for (const ref of lastGridJsonRef.current.keys()) {
+      if (!pollableRefs.has(ref)) lastGridJsonRef.current.delete(ref)
+    }
+    for (const ref of lastScrollbackRef.current.keys()) {
+      if (!pollableRefs.has(ref)) lastScrollbackRef.current.delete(ref)
+    }
+
     if (status !== 'connected') return
     const timers = new Map<string, ReturnType<typeof setTimeout>>()
     let stopped = false
@@ -136,16 +146,20 @@ export function useTerminalFeeds(props: UseTerminalFeedsProps): void {
         // alternate screen(TUI)にスクロールバックの概念は無く、停止端末(grid なし)は
         // read_text 自体が失敗するため、いずれも取得しない。
         if (isVisible && p.pinned && grid && grid.active_screen !== 'alternate') {
-          const text = await p.readText(ref, { scrollback: true, lines: p.historyLines })
-          // read_text の待機中に hidden・unpin・**前面の切替**が起きた応答は反映しない。
-          // grid 側だけ確認して history 側を素通しすると、背面になった ref の
-          // state と localStorage が更新される。
-          const after = latest.current
-          if (!isCurrentCycle() || !after.pinned || !after.visibleRefs.includes(ref)) return
-          after.applyFeedHistory({ ref, epoch, history: stripVisibleScreen(text, visibleLineCount(grid)) })
-          if (text !== lastScrollbackRef.current.get(ref)) {
-            lastScrollbackRef.current.set(ref, text)
-            saveSurfaceScreen(ref, { scrollback: text, updatedAt: now })
+          try {
+            const text = await p.readText(ref, { scrollback: true, lines: p.historyLines })
+            // read_text の待機中に hidden・unpin・**前面の切替**が起きた応答は反映しない。
+            // grid 側だけ確認して history 側を素通しすると、背面になった ref の
+            // state と localStorage が更新される。
+            const after = latest.current
+            if (!isCurrentCycle() || !after.pinned || !after.visibleRefs.includes(ref)) return
+            after.applyFeedHistory({ ref, epoch, history: stripVisibleScreen(text, visibleLineCount(grid)) })
+            if (text !== lastScrollbackRef.current.get(ref)) {
+              lastScrollbackRef.current.set(ref, text)
+              saveSurfaceScreen(ref, { scrollback: text, updatedAt: now })
+            }
+          } catch {
+            // replay で得た live grid は維持し、履歴だけ次の周期まで据え置く。
           }
         }
       } catch (err) {

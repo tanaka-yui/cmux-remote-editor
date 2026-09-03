@@ -20,10 +20,10 @@ function shortTitle(title: string): string {
   return title.replace(/^\[\d+\]\s*/, '').trim() || title
 }
 
-function tabLabel(surface: Surface, subscribed: boolean): string {
+function tabLabel(surface: Surface, subscribed: boolean, activity: boolean): string {
   const name = `${surface.workspace_title} / ${shortTitle(surface.title)}`
   if (surface.type === 'browser') return `${name}、browser、購読対象外`
-  return `${name}、${subscribed ? 'ライブ購読中' : '未購読'}`
+  return `${name}、${subscribed ? 'ライブ購読中' : '未購読'}${activity ? '、更新あり' : ''}`
 }
 
 export function TabBar({
@@ -64,7 +64,6 @@ export function TabBar({
 
   return (
     <div
-      role="tablist"
       style={{
         display: 'flex',
         alignItems: 'stretch',
@@ -72,118 +71,132 @@ export function TabBar({
         backgroundColor: 'var(--color-surface)',
         borderBottom: '1px solid var(--color-border)',
         flexShrink: 0,
-        overflowX: 'auto',
       }}
     >
-      {surfaces.map((surface, index) => {
-        const active = surface.ref === foreground
-        const subscribed = surface.type !== 'browser' && subscribedRefs.has(surface.ref)
-        const feed = feeds.get(surface.ref)
-        const isError = feed?.status === 'error'
-        const hasLiveDot = surface.type !== 'browser' && (subscribed || isError)
-        const startsWorkspace = index > 0 && surface.workspace_ref !== surfaces[index - 1]?.workspace_ref
-        const liveDotSize = feed?.activity ? 6 : 5
-        const titleColor = isError
-          ? 'var(--color-text-subtle)'
-          : subscribed
-            ? 'var(--color-text)'
-            : 'var(--color-text-muted)'
+      <div role="tablist" style={{ display: 'flex', alignItems: 'stretch', flex: 1, minWidth: 0, overflowX: 'auto' }}>
+        {surfaces.map((surface, index) => {
+          const active = surface.ref === foreground
+          const subscribed = surface.type !== 'browser' && subscribedRefs.has(surface.ref)
+          const feed = feeds.get(surface.ref)
+          const isError = feed?.status === 'error'
+          const hasActivity = feed?.activity === true
+          const hasLiveDot = surface.type !== 'browser' && (subscribed || isError)
+          const startsWorkspace = index > 0 && surface.workspace_ref !== surfaces[index - 1]?.workspace_ref
+          const titleColor = isError
+            ? 'var(--color-text-subtle)'
+            : subscribed
+              ? 'var(--color-text)'
+              : 'var(--color-text-muted)'
 
-        return (
-          <div
-            key={surface.ref}
-            ref={active ? activeRef : null}
-            role="tab"
-            aria-label={tabLabel(surface, subscribed)}
-            aria-selected={active}
-            data-ref={surface.ref}
-            tabIndex={surface.ref === rovingRef ? 0 : -1}
-            onClick={() => select(surface)}
-            onKeyDown={(event) => {
-              if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
-                event.preventDefault()
-                moveFocus(event.currentTarget, event.key === 'ArrowLeft' ? -1 : 1)
-                return
-              }
-              if (event.key === ' ') {
-                event.preventDefault()
+          return (
+            <div
+              key={surface.ref}
+              ref={active ? activeRef : null}
+              role="tab"
+              aria-label={tabLabel(surface, subscribed, hasActivity)}
+              aria-selected={active}
+              aria-keyshortcuts="Delete Backspace"
+              aria-description="タブを閉じる"
+              data-ref={surface.ref}
+              tabIndex={surface.ref === rovingRef ? 0 : -1}
+              onClick={(event) => {
+                const target = event.target
+                if (target instanceof Element && target.closest('[data-close-tab-hit]')) {
+                  onClose(surface.ref)
+                  return
+                }
                 select(surface)
-                return
-              }
-              if (event.key === 'Enter') select(surface)
-            }}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6,
-              padding: '0 10px',
-              maxWidth: 180,
-              borderRight: '1px solid var(--color-border)',
-              borderLeft: startsWorkspace ? '2px solid var(--color-tab-group-border)' : undefined,
-              backgroundColor: active ? 'var(--color-bg)' : 'transparent',
-              borderBottom: active ? '2px solid var(--color-accent)' : '2px solid transparent',
-              cursor: 'pointer',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            <span
-              aria-hidden="true"
-              style={{
-                width: 4,
-                height: 4,
-                borderRadius: '50%',
-                backgroundColor: workspaceColor(surface.workspace_ref),
-                flexShrink: 0,
               }}
-            />
-            <span
+              onKeyDown={(event) => {
+                if (event.key === 'Delete' || event.key === 'Backspace') {
+                  event.preventDefault()
+                  onClose(surface.ref)
+                  return
+                }
+                if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+                  event.preventDefault()
+                  moveFocus(event.currentTarget, event.key === 'ArrowLeft' ? -1 : 1)
+                  return
+                }
+                if (event.key === ' ') {
+                  event.preventDefault()
+                  select(surface)
+                  return
+                }
+                if (event.key === 'Enter') select(surface)
+              }}
               style={{
-                color: titleColor,
-                fontSize: 13,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '0 10px',
+                maxWidth: 180,
+                borderRight: '1px solid var(--color-border)',
+                borderLeft: startsWorkspace ? '2px solid var(--color-tab-group-border)' : undefined,
+                backgroundColor: active ? 'var(--color-bg)' : 'transparent',
+                borderBottom: active ? '2px solid var(--color-accent)' : '2px solid transparent',
+                cursor: 'pointer',
                 whiteSpace: 'nowrap',
-                maxWidth: 140,
               }}
             >
-              {shortTitle(surface.title)}
-            </span>
-            {hasLiveDot ? (
               <span
                 aria-hidden="true"
-                data-testid="live-dot"
                 style={{
-                  width: liveDotSize,
-                  height: liveDotSize,
+                  width: 4,
+                  height: 4,
                   borderRadius: '50%',
-                  backgroundColor: isError ? 'var(--color-warning)' : 'var(--color-accent)',
+                  backgroundColor: workspaceColor(surface.workspace_ref),
                   flexShrink: 0,
                 }}
               />
-            ) : null}
-            <button
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation()
-                onClose(surface.ref)
-              }}
-              onKeyDown={(event) => event.stopPropagation()}
-              aria-label="Close tab"
-              style={{
-                background: 'none',
-                border: 'none',
-                color: 'var(--color-text-subtle)',
-                padding: '0 2px',
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-              }}
-            >
-              <X size={14} />
-            </button>
-          </div>
-        )
-      })}
+              <span
+                style={{
+                  color: titleColor,
+                  fontSize: 13,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  maxWidth: 140,
+                }}
+              >
+                {shortTitle(surface.title)}
+              </span>
+              {hasLiveDot ? (
+                <span
+                  aria-hidden="true"
+                  data-testid="live-dot"
+                  style={{
+                    width: 6,
+                    height: 6,
+                    borderRadius: '50%',
+                    backgroundColor: isError
+                      ? 'var(--color-warning)'
+                      : hasActivity
+                        ? 'var(--color-accent)'
+                        : 'transparent',
+                    border: isError || hasActivity ? 'none' : '1px solid var(--color-accent)',
+                    boxSizing: 'border-box',
+                    flexShrink: 0,
+                  }}
+                />
+              ) : null}
+              <span
+                aria-hidden="true"
+                data-close-tab-hit="true"
+                data-testid="close-tab-hit"
+                style={{
+                  color: 'var(--color-text-subtle)',
+                  padding: '0 2px',
+                  display: 'flex',
+                  alignItems: 'center',
+                }}
+              >
+                <X size={14} />
+              </span>
+            </div>
+          )
+        })}
+      </div>
       <button
         type="button"
         onClick={onCreate}

@@ -1288,8 +1288,9 @@ Expected: FAIL（`createSwitcherReducer` が存在しない）。
 `apps/client/src/lib/view-state.ts` に追記する。
 
 ```ts
-import type { CachedScreen } from './surface-cache'
 import type { RenderGrid } from './render-grid'
+import { stripVisibleScreen, visibleLineCount } from './scrollback'
+import type { CachedScreen } from './surface-cache'
 
 export type FeedStatus =
   | 'live'     // 今回の昇格後に 1 回以上取得成功した
@@ -1391,7 +1392,9 @@ function promote(
       return {
         ...base,
         grid: cached.grid ?? null,
-        history: cached.scrollback ?? cached.text ?? '',
+        history: cached.grid
+          ? stripVisibleScreen(cached.scrollback ?? cached.text ?? '', visibleLineCount(cached.grid))
+          : (cached.scrollback ?? cached.text ?? ''),
         updatedAt: cached.updatedAt,
         contentHash: cached.grid === undefined ? '' : JSON.stringify(cached.grid.row_spans),
         status: 'warming',
