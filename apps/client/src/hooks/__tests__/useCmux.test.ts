@@ -10,25 +10,33 @@ import { useCmux } from '../useCmux'
 const hoisted = vi.hoisted(() => ({
   sent: [] as string[],
   onMessage: { fn: (_data: string) => {} },
+  onClose: { fn: () => {} },
   responses: {} as Record<string, unknown>,
   errors: {} as Record<string, { code: string; message: string }>,
+  status: { value: 'connected' as 'connected' | 'disconnected' },
+  canSend: { value: true },
+  swallow: { value: false },
 }))
 
 vi.mock('../useWebSocket', () => ({
-  useWebSocket: ({ onMessage }: { onMessage: (data: string) => void }) => {
+  useWebSocket: ({ onMessage, onClose }: { onMessage: (data: string) => void; onClose?: () => void }) => {
     hoisted.onMessage.fn = onMessage
+    hoisted.onClose.fn = onClose ?? (() => {})
     return {
-      status: 'connected' as const,
+      status: hoisted.status.value,
       send: (data: string) => {
+        if (!hoisted.canSend.value) return false
         hoisted.sent.push(data)
+        if (hoisted.swallow.value) return true
         const req = JSON.parse(data) as { id: string; method: string }
         const error = hoisted.errors[req.method]
         if (error) {
           hoisted.onMessage.fn(JSON.stringify({ id: req.id, ok: false, error }))
-          return
+          return true
         }
         const result = hoisted.responses[req.method] ?? {}
         hoisted.onMessage.fn(JSON.stringify({ id: req.id, ok: true, result }))
+        return true
       },
     }
   },
@@ -38,6 +46,97 @@ beforeEach(() => {
   hoisted.sent.length = 0
   hoisted.responses = {}
   hoisted.errors = {}
+  hoisted.status.value = 'connected'
+  hoisted.canSend.value = true
+  hoisted.swallow.value = false
+})
+
+describe('rpc の登録順（同期 echo の回帰ガード）', () => {
+  it('send の中で同期的に応答が返っても取りこぼさない', async () => {
+    hoisted.responses['surface.read_text'] = { text: 'sync-echo' }
+    const { result } = renderHook(() => useCmux())
+
+    await expect(result.current.readText('surface:1')).resolves.toBe('sync-echo')
+  })
+
+  it('同期 echo で解決した RPC はタイマーを残さない', async () => {
+    vi.useFakeTimers()
+    hoisted.responses['surface.read_text'] = { text: 'ok' }
+    const { result } = renderHook(() => useCmux())
+
+    await result.current.readText('surface:1')
+
+    expect(vi.getTimerCount()).toBe(0)
+    vi.useRealTimers()
+  })
+})
+
+describe('D10 切断時の pending RPC', () => {
+  it('切断で既存の pending が 10 秒を待たず reject される', async () => {
+    vi.useFakeTimers()
+    const { result } = renderHook(() => useCmux())
+    hoisted.swallow.value = true
+    let rejected: Error | null = null
+    const promise = result.current.readText('surface:1').catch((error: Error) => {
+      rejected = error
+      return ''
+    })
+
+    act(() => {
+      hoisted.status.value = 'disconnected'
+      hoisted.onClose.fn()
+    })
+
+    await promise
+    expect(rejected).toBeInstanceOf(Error)
+    expect(vi.getTimerCount()).toBe(0)
+    vi.useRealTimers()
+  })
+
+  it('切断中に新しく呼んだ RPC は 10 秒待たず即 reject される', async () => {
+    vi.useFakeTimers()
+    const { result } = renderHook(() => useCmux())
+
+    act(() => {
+      hoisted.canSend.value = false
+      hoisted.status.value = 'disconnected'
+    })
+
+    await expect(result.current.readText('surface:1')).rejects.toThrow(/not connected/i)
+    expect(vi.getTimerCount()).toBe(0)
+    vi.useRealTimers()
+  })
+
+  it('アンマウントでも pending が reject され、タイマーが残らない', async () => {
+    vi.useFakeTimers()
+    const { result, unmount } = renderHook(() => useCmux())
+    hoisted.swallow.value = true
+    const promise = result.current.readText('surface:1').catch(() => 'rejected')
+
+    act(() => {
+      unmount()
+    })
+
+    await expect(promise).resolves.toBe('rejected')
+    expect(vi.getTimerCount()).toBe(0)
+    vi.useRealTimers()
+  })
+
+  it('reject 後に遅れて届いた応答は破棄される（例外にならない）', async () => {
+    const { result } = renderHook(() => useCmux())
+    hoisted.swallow.value = true
+    const promise = result.current.readText('surface:1').catch(() => 'rejected')
+    const sentId = (JSON.parse(hoisted.sent[hoisted.sent.length - 1] as string) as { id: string }).id
+
+    act(() => {
+      hoisted.onClose.fn()
+    })
+
+    await promise
+    expect(() => {
+      hoisted.onMessage.fn(JSON.stringify({ id: sentId, ok: true, result: { text: 'late' } }))
+    }).not.toThrow()
+  })
 })
 
 describe('useCmux closeSurface', () => {

@@ -5,19 +5,22 @@ export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected'
 interface UseWebSocketOptions {
   url: string
   onMessage: (data: string) => void
+  onClose?: () => void
   maxRetries?: number
 }
 
 const DEFAULT_MAX_RETRIES = 10
 
-export function useWebSocket({ url, onMessage, maxRetries = DEFAULT_MAX_RETRIES }: UseWebSocketOptions) {
+export function useWebSocket({ url, onMessage, onClose, maxRetries = DEFAULT_MAX_RETRIES }: UseWebSocketOptions) {
   const [status, setStatus] = useState<ConnectionStatus>('disconnected')
   const wsRef = useRef<WebSocket | null>(null)
   const retryRef = useRef(0)
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const onMessageRef = useRef(onMessage)
+  const onCloseRef = useRef(onClose)
   const unmountedRef = useRef(false)
   onMessageRef.current = onMessage
+  onCloseRef.current = onClose
 
   const clearRetryTimer = useCallback(() => {
     if (retryTimerRef.current !== null) {
@@ -47,6 +50,7 @@ export function useWebSocket({ url, onMessage, maxRetries = DEFAULT_MAX_RETRIES 
     ws.onclose = () => {
       setStatus('disconnected')
       wsRef.current = null
+      onCloseRef.current?.()
 
       if (unmountedRef.current) return
 
@@ -70,10 +74,10 @@ export function useWebSocket({ url, onMessage, maxRetries = DEFAULT_MAX_RETRIES 
     wsRef.current = ws
   }, [url, maxRetries, clearRetryTimer])
 
-  const send = useCallback((data: string) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(data)
-    }
+  const send = useCallback((data: string): boolean => {
+    if (wsRef.current?.readyState !== WebSocket.OPEN) return false
+    wsRef.current.send(data)
+    return true
   }, [])
 
   useEffect(() => {

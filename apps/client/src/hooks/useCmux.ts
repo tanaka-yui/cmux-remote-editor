@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import {
   type CmuxNotification,
@@ -32,6 +32,14 @@ export function useCmux() {
   const [notifications, setNotifications] = useState<CmuxNotification[]>([])
   const pendingRef = useRef(new Map<string, PendingRequest>())
 
+  const rejectAllPending = useCallback((reason: string) => {
+    for (const [, pending] of pendingRef.current) {
+      clearTimeout(pending.timer)
+      pending.reject(new Error(reason))
+    }
+    pendingRef.current.clear()
+  }, [])
+
   const handleMessage = useCallback((data: string) => {
     try {
       const resp = parseRpcResponse(data)
@@ -59,9 +67,14 @@ export function useCmux() {
       ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws?token=${encodeURIComponent(getAuthToken())}`
       : 'ws://localhost:48701/ws'
 
+  const handleClose = useCallback(() => {
+    rejectAllPending('WebSocket disconnected')
+  }, [rejectAllPending])
+
   const { status, send } = useWebSocket({
     url: wsUrl,
     onMessage: handleMessage,
+    onClose: handleClose,
   })
 
   const rpc = useCallback(
@@ -74,11 +87,20 @@ export function useCmux() {
         }, RPC_TIMEOUT)
 
         pendingRef.current.set(req.id, { resolve, reject, timer })
-        send(JSON.stringify(req))
+        if (!send(JSON.stringify(req))) {
+          const pending = pendingRef.current.get(req.id)
+          if (pending) {
+            clearTimeout(pending.timer)
+            pendingRef.current.delete(req.id)
+            reject(new Error(`RPC failed: not connected (${method})`))
+          }
+        }
       })
     },
     [send],
   )
+
+  useEffect(() => () => rejectAllPending('WebSocket unmounted'), [rejectAllPending])
 
   const listWorkspaces = useCallback(async () => {
     const result = (await rpc('workspace.list')) as { workspaces: Workspace[] }
