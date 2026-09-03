@@ -257,9 +257,9 @@ export function flattenSurfaces(tree: CmuxTree, workspaceRef?: string): FlatSurf
 Run: `cd apps/server && bun test src/__tests__/ws.test.ts`
 Expected: PASS（既存テストも含めて全件）。
 
-- [ ] **Step 5: 型と lint を通す**
+- [ ] **Step 5: 型と lint、全体テスト**
 
-Run: `pnpm check`
+Run: `pnpm check && pnpm test`
 Expected: エラーなし。
 
 - [ ] **Step 6: コミット**
@@ -305,6 +305,24 @@ EOF
 //   canSend: { value: true },
 //   swallow: { value: false },   // true なら送信はするが応答を返さない（in-flight を作る）
 // mock の send は canSend.value が false のとき何もせず false を返す。
+
+describe('rpc の登録順（同期 echo の回帰ガード）', () => {
+  it('send の中で同期的に応答が返っても取りこぼさない', async () => {
+    // 既存 mock は send の呼び出し中に onMessage を同期実行する。
+    hoisted.responses['surface.read_text'] = { text: 'sync-echo' }
+    const { result } = renderHook(() => useCmux())
+    await expect(result.current.readText('surface:1')).resolves.toBe('sync-echo')
+  })
+
+  it('同期 echo で解決した RPC はタイマーを残さない', async () => {
+    vi.useFakeTimers()
+    hoisted.responses['surface.read_text'] = { text: 'ok' }
+    const { result } = renderHook(() => useCmux())
+    await result.current.readText('surface:1')
+    expect(vi.getTimerCount()).toBe(0)
+    vi.useRealTimers()
+  })
+})
 
 describe('D10 切断時の pending RPC', () => {
   it('切断で既存の pending が 10 秒を待たず reject される', async () => {
@@ -417,17 +435,25 @@ interface UseWebSocketOptions {
     (method: string, params: Record<string, unknown> = {}): Promise<unknown> => {
       return new Promise((resolve, reject) => {
         const req = createRpcRequest(method, params)
-        // 送信できないなら pending にもタイマーにも登録しない。登録してしまうと
-        // 送られていない RPC を 10 秒待つことになる（D10-4）。
-        if (!send(JSON.stringify(req))) {
-          reject(new Error(`RPC failed: not connected (${method})`))
-          return
-        }
         const timer = setTimeout(() => {
           pendingRef.current.delete(req.id)
           reject(new Error(`RPC timeout: ${method}`))
         }, RPC_TIMEOUT)
+        // pending は send より「先に」登録する。テストダブル（および将来の同期的な
+        // メッセージ配送）は send の呼び出し中に onMessage を同期実行するため、
+        // 後から登録すると応答を取りこぼして 10 秒 timeout になる。
         pendingRef.current.set(req.id, { resolve, reject, timer })
+        // 送れなかったら登録を取り消して即 reject する。無言 no-op のままだと
+        // 送られていない RPC を 10 秒待つことになる（D10-4）。
+        if (!send(JSON.stringify(req))) {
+          // 同期 echo で既に解決済みなら pending は消えている。その場合は何もしない。
+          const pending = pendingRef.current.get(req.id)
+          if (pending) {
+            clearTimeout(pending.timer)
+            pendingRef.current.delete(req.id)
+            reject(new Error(`RPC failed: not connected (${method})`))
+          }
+        }
       })
     },
     [send],
@@ -437,7 +463,11 @@ interface UseWebSocketOptions {
   useEffect(() => rejectAllPending.bind(null, 'unmounted'), [rejectAllPending])
 ```
 
-> 注: `send` を先に呼んでから `pending` に登録する順序に変える。同期的にエコーバックするテストダブルでも、応答は `handleMessage` 経由で次のマイクロタスク以降に届くため取りこぼさない。もし同期エコーで取りこぼす実装なら、`pendingRef.set` を先に行い、`send` が `false` のときに `delete` + `clearTimeout` してから reject すること。
+> **順序が重要**: 現行の `useCmux.test.ts` の `send` mock は **`send` の呼び出し中に `onMessage` を
+> 同期実行する**。`send` を先に呼んで後から `pendingRef` へ登録すると、応答が届いた時点で
+> pending が存在せず捨てられ、その後 10 秒 timeout になる。したがって
+> **pending と timer を先に登録し、`send` が `false` を返したら取り消して reject する**。
+> `Promise` executor は同期実行されるので、`reject` を後から呼んでも問題ない。
 
 - [ ] **Step 5: テストが通ることを確認する**
 
@@ -742,6 +772,22 @@ describe('reconcile', () => {
     expectInvariants(next, after)
   })
 
+  it('外部でサーフェスが増えても、tie-break は現在の tree 順で決まる', () => {
+    const before = [term('surface:5', 'workspace:1', false, 0), term('surface:6', 'workspace:1', false, 1)]
+    let state = initialize(before, 'surface:5', 1000)
+    state = focus(state, before[1] as SurfaceLike, 1000, 2)
+    expect(state.subscriptions.map((s) => s.treeIndex)).toEqual([0, 1])
+    // 外部で surface:1 が先頭に挿入され、5 と 6 の index が 1 つずつ後ろへずれる
+    const after = [
+      term('surface:1', 'workspace:1', false, 0),
+      term('surface:5', 'workspace:1', false, 1),
+      term('surface:6', 'workspace:1', false, 2),
+    ]
+    const next = reconcile(state, after, 2000)
+    expect(next.subscriptions.map((s) => s.treeIndex).sort()).toEqual([1, 2])
+    expectInvariants(next, after, 2)
+  })
+
   it('前面が生きていれば何も変えない', () => {
     const surfaces = [term('surface:1'), term('surface:2')]
     const state = initialize(surfaces, 'surface:1', 1000)
@@ -888,10 +934,15 @@ export function focus(state: ViewState, surface: SurfaceLike, now: number, cap: 
 // （消えた ref は surfaces に無いので、新しい一覧からは引けない）。
 export function reconcile(state: ViewState, surfaces: readonly SurfaceLike[], now: number): ViewState {
   const alive = new Map(surfaces.map((s) => [s.ref, s]))
-  const subscriptions = state.subscriptions.filter((s) => {
-    const surface = alive.get(s.ref)
-    return surface !== undefined && isTerminal(surface)
-  })
+  const subscriptions = state.subscriptions
+    .filter((s) => {
+      const surface = alive.get(s.ref)
+      return surface !== undefined && isTerminal(surface)
+    })
+    // treeIndex を現在の tree 順へ写し直す。外部で前方のサーフェスが増減すると
+    // 生存サーフェスの index は変わるので、購読時の値を固定したままだと
+    // tie-break が「現在の system.tree 順」を表さなくなる。
+    .map((s) => ({ ...s, treeIndex: (alive.get(s.ref) as SurfaceLike).index }))
 
   const current = state.foreground === null ? undefined : alive.get(state.foreground)
   if (current) return { ...state, subscriptions }
@@ -951,9 +1002,9 @@ export function pollPlan(
 Run: `cd apps/client && pnpm vitest run src/lib/__tests__/view-state.test.ts`
 Expected: PASS（全 25 ケース前後）。
 
-- [ ] **Step 5: 型と lint**
+- [ ] **Step 5: 型と lint、全体テスト**
 
-Run: `pnpm check`
+Run: `pnpm check && pnpm test`
 Expected: エラーなし。
 
 - [ ] **Step 6: コミット**
@@ -1216,16 +1267,18 @@ export function describeFeed(
   const hhmmss = (t: number) => new Date(t).toTimeString().slice(0, 8)
   const hhmm = (t: number) => new Date(t).toTimeString().slice(0, 5)
 
+  // 5. error を source より先に判定する。F5n は live/none かつ updatedAt あり を作るので、
+  //    その後 F6/F8 で error/none になったときも「接続なし · 最終 HH:MM」を出せる必要がある。
+  if (feed.status === 'error') {
+    const freshness = feed.updatedAt === null ? '接続なし' : `接続なし · 最終 ${hhmm(feed.updatedAt)}`
+    // 描けるものがあれば残し、無ければメッセージ枠に出す。
+    return feed.source === 'none' ? { kind: 'message', message: '接続なし', freshness } : { kind: 'grid', freshness }
+  }
   // 4. 描けるフレームが無い（loading = 初見 / live = F5n の停止端末）
   if (feed.source === 'none') {
-    if (feed.status === 'error') return { kind: 'message', message: '接続なし', freshness: '接続なし' }
     return feed.status === 'live'
       ? { kind: 'message', message: '表示できる内容がありません（端末が停止しています）', freshness: null }
       : { kind: 'message', message: '読み込み中', freshness: null }
-  }
-  // 5. 直近に描けるものがあれば残す
-  if (feed.status === 'error') {
-    return { kind: 'grid', freshness: feed.updatedAt === null ? '接続なし' : `接続なし · 最終 ${hhmm(feed.updatedAt)}` }
   }
   // 1. live/memory は鮮度を出さない
   if (feed.status === 'live') return { kind: 'grid', freshness: null }
@@ -1271,19 +1324,30 @@ function promote(
   }
   if (!prev) {
     const cached = readCache(ref)
-    if (cached && (cached.grid || cached.scrollback)) {
+    // 旧バージョンが書いた text-only の entry も有効なキャッシュとして扱う
+    // （現行アプリは grid の無い entry を scrollback ?? text で表示している）。
+    if (cached && (cached.grid || cached.scrollback || cached.text)) {
       return {
         ...base,
         grid: cached.grid ?? null,
-        history: cached.scrollback ?? '',
+        history: cached.scrollback ?? cached.text ?? '',
         updatedAt: cached.updatedAt,
+        linesHash: cached.grid === undefined ? '' : JSON.stringify(cached.grid.lines),
         status: 'warming',
         source: 'cache',
       }
     }
   }
   // F3: それ以外（source === 'none' を含む。F5n の停止端末は同一セッションでは cache を使わない）
-  return { ...base, grid: null, history: '', updatedAt: prev?.updatedAt ?? null, status: 'loading', source: 'none' }
+  return {
+    ...base,
+    grid: null,
+    history: '',
+    updatedAt: prev?.updatedAt ?? null,
+    linesHash: '',
+    status: 'loading',
+    source: 'none',
+  }
 }
 
 // D3.2 の保持上限。購読中の feed は退避対象から除外する。
@@ -1335,9 +1399,9 @@ export function createSwitcherReducer(
 Run: `cd apps/client && pnpm vitest run src/lib/__tests__/view-state.test.ts`
 Expected: PASS。
 
-- [ ] **Step 5: 型と lint**
+- [ ] **Step 5: 型と lint、全体テスト**
 
-Run: `pnpm check`
+Run: `pnpm check && pnpm test`
 Expected: エラーなし。
 
 - [ ] **Step 6: コミット**
@@ -1573,9 +1637,9 @@ export function saveSurfaceScreen(surfaceRef: string, screen: CachedScreen): voi
 Run: `cd apps/client && pnpm vitest run src/lib/__tests__/surface-cache.test.ts`
 Expected: PASS（既存テストも含めて全件）。
 
-- [ ] **Step 5: 型と lint**
+- [ ] **Step 5: 型と lint、全体テスト**
 
-Run: `pnpm check`
+Run: `pnpm check && pnpm test`
 Expected: エラーなし。
 
 - [ ] **Step 6: コミット**
@@ -1604,8 +1668,10 @@ EOF
 ## Task 6: `useCmux` — `SwitcherState` の所有と RPC の作り替え
 
 **Files:**
-- Modify: `apps/client/src/hooks/useCmux.ts`（`selectWorkspace` 削除、`createWorkspace` / `createSurface` / `listSurfaces` の作り替え、`useReducer` の導入）
+- Modify: `apps/client/src/hooks/useCmux.ts`（`selectWorkspace` 削除、`createWorkspace` / `createSurface` / `listSurfaces` の作り替え、`useReducer` の導入、移行用 shim の追加）
 - Modify: `apps/client/src/lib/cmux-rpc.ts:45-54`（`Surface` 型に D7 の属性を足す）
+- Modify: `apps/client/src/App.tsx`（`selectWorkspace` の呼び出しを削除。ドロワー行タップは展開のみに）
+- Modify: `apps/client/src/components/Drawer.tsx`（`onSelectWorkspace` prop の削除に伴う最小限の追随）
 - Test: `apps/client/src/hooks/__tests__/useCmux.test.ts`
 
 **Interfaces:**
@@ -1679,10 +1745,17 @@ describe('D1 workspace.select を一度も呼ばない', () => {
     expect(methods).not.toContain('workspace.select')
   })
 
-  it('selectWorkspace は公開 API に存在しない', () => {
+  it('selectWorkspace は公開 API から消えている', () => {
     const { result } = renderHook(() => useCmux())
     expect('selectWorkspace' in result.current).toBe(false)
-    expect('focusSurface' in result.current).toBe(false)
+  })
+
+  it('移行用 shim（currentSurface / focusSurface）はまだ残っている', () => {
+    // Task 11 で削除する。ここで存在を固定しておくことで、Task 6〜10 の間に
+    // App.tsx が型エラーにならないことを保証する。
+    const { result } = renderHook(() => useCmux())
+    expect('currentSurface' in result.current).toBe(true)
+    expect(typeof result.current.focusSurface).toBe('function')
   })
 })
 
@@ -1697,6 +1770,8 @@ describe('D1.1 createWorkspace の 3 手順', () => {
     expect(methods).not.toContain('surface.create')
     expect(methods.filter((m) => m === 'surface.list')).toHaveLength(1) // 共通 refresh を 1 回だけ
     expect(result.current.view.foreground).toBe('surface:200')
+    // step 3 は selectSurface を通る（= 購読集合にも入る）。focus を直接呼ぶ経路は無い。
+    expect(result.current.view.subscriptions.map((s) => s.ref)).toContain('surface:200')
   })
 
   it('返った surface_ref が一覧に無ければ前面を変えず、エラーにもしない', async () => {
@@ -1704,7 +1779,7 @@ describe('D1.1 createWorkspace の 3 手順', () => {
     hoisted.responses['surface.list'] = { surfaces: [{ ref: 'surface:1', type: 'terminal', title: 'a', workspace_ref: 'workspace:1', workspace_id: 'W1' }] }
     const { result } = renderHook(() => useCmux())
     act(() => {
-      result.current.initializeFrom([{ ref: 'surface:1', type: 'terminal', workspace_ref: 'workspace:1' }], null)
+      result.current.initializeFrom([{ ref: 'surface:1', type: 'terminal', workspace_ref: 'workspace:1', index: 0 }], null)
     })
     await act(async () => {
       await expect(result.current.createWorkspace()).resolves.toBeDefined()
@@ -1767,13 +1842,91 @@ describe('currentWorkspace は導出値', () => {
     act(() => {
       result.current.initializeFrom(
         [
-          { ref: 'surface:1', type: 'terminal', workspace_ref: 'workspace:1' },
-          { ref: 'surface:2', type: 'terminal', workspace_ref: 'workspace:26' },
+          { ref: 'surface:1', type: 'terminal', workspace_ref: 'workspace:1', index: 0 },
+          { ref: 'surface:2', type: 'terminal', workspace_ref: 'workspace:26', index: 1 },
         ],
         'surface:2',
       )
     })
     expect(result.current.currentWorkspace).toBe('workspace:26')
+  })
+})
+
+describe('D3.1 selectSurface の原子性（合成 reducer の結合テスト）', () => {
+  // retained memory / cache / none の 3 入力で、foreground が変わった「最初のコミット」に
+  // 対応する feed が既に warming/loading になっていること（中間コミットが無いこと）。
+  const renderCounts: { view: string | null; feedStatus: string | undefined }[] = []
+
+  function trackingHook() {
+    const cmux = useCmux()
+    renderCounts.push({
+      view: cmux.view.foreground,
+      feedStatus: cmux.view.foreground === null ? undefined : cmux.feeds.get(cmux.view.foreground)?.status,
+    })
+    return cmux
+  }
+
+  beforeEach(() => {
+    renderCounts.length = 0
+    localStorage.clear()
+  })
+
+  it('none: 最初のコミットで loading/none になっている（中間コミットが無い）', () => {
+    const { result } = renderHook(() => trackingHook())
+    const surfaces = [{ ref: 'surface:1', type: 'terminal', workspace_ref: 'workspace:1', index: 0 }]
+    act(() => {
+      result.current.initializeFrom(surfaces, 'surface:1')
+    })
+    const firstWithForeground = renderCounts.find((r) => r.view === 'surface:1')
+    expect(firstWithForeground?.feedStatus).toBe('loading')
+  })
+
+  it('cache: 最初のコミットで warming/cache になっている', () => {
+    localStorage.setItem(
+      'cmux-surface-cache:surface:1',
+      JSON.stringify({ scrollback: 'cached', updatedAt: 500 }),
+    )
+    const { result } = renderHook(() => trackingHook())
+    const surfaces = [{ ref: 'surface:1', type: 'terminal', workspace_ref: 'workspace:1', index: 0 }]
+    act(() => {
+      result.current.initializeFrom(surfaces, 'surface:1')
+    })
+    const first = renderCounts.find((r) => r.view === 'surface:1')
+    expect(first?.feedStatus).toBe('warming')
+    expect(result.current.feeds.get('surface:1')?.source).toBe('cache')
+  })
+
+  it('retained memory: 追い出し後の再昇格でも最初のコミットで warming/memory', () => {
+    const { result } = renderHook(() => trackingHook())
+    const surfaces = [
+      { ref: 'surface:1', type: 'terminal', workspace_ref: 'workspace:1', index: 0 },
+      { ref: 'surface:2', type: 'terminal', workspace_ref: 'workspace:1', index: 1 },
+    ]
+    act(() => {
+      result.current.initializeFrom(surfaces, 'surface:1')
+    })
+    act(() => {
+      result.current.applyFeedResult({ ref: 'surface:1', epoch: 1, grid: { rows: 1, cols: 1, lines: [] }, now: 2000 })
+    })
+    act(() => {
+      result.current.selectSurface(surfaces[1])
+    })
+    renderCounts.length = 0
+    act(() => {
+      result.current.selectSurface(surfaces[0])
+    })
+    const first = renderCounts.find((r) => r.view === 'surface:1')
+    // 既購読のままなら F4 で live のまま。追い出されていれば warming/memory。
+    expect(['live', 'warming']).toContain(first?.feedStatus)
+    expect(result.current.feeds.get('surface:1')?.source).toBe('memory')
+  })
+
+  it('focus / promote は hook の公開 API に出ていない', () => {
+    const { result } = renderHook(() => useCmux())
+    expect('focus' in result.current).toBe(false)
+    expect('promote' in result.current).toBe(false)
+    expect('reconcile' in result.current).toBe(false)
+    expect('initialize' in result.current).toBe(false)
   })
 })
 
@@ -1825,7 +1978,12 @@ export interface Surface {
 
 - [ ] **Step 4: `useCmux` を作り替える**
 
-削除するもの: `selectWorkspace` / `focusSurface` / `navigateWorkspace` / `navigatePane` / `navigateSurface` / `currentSurface` / `panes` / `currentPane` / `listPanes` と、`useCmux.ts:101-103` の誤ったコメント。
+**このタスクで削除するもの**: `selectWorkspace` と、`useCmux.ts:101-103` の誤ったコメント。
+呼び出し元（`App.tsx:380-382` のドロワー行タップ、`createWorkspace` の追従、`closeWorkspace` の
+クリア）も同時に直す。
+
+**このタスクでは削除しないもの**（Task 11 で削除する）: `currentSurface` / `focusSurface`（shim として残す）、
+`panes` / `currentPane` / `listPanes` / `navigateWorkspace` / `navigatePane` / `navigateSurface`（触らない）。
 
 追加するもの:
 
@@ -1930,13 +2088,14 @@ Expected: エラーなし。**shim のおかげでこの時点でもグリーン
 - [ ] **Step 7: コミット**
 
 ```bash
-git add apps/client/src/hooks/useCmux.ts apps/client/src/lib/cmux-rpc.ts apps/client/src/hooks/__tests__/useCmux.test.ts
+git add apps/client/src/hooks/useCmux.ts apps/client/src/lib/cmux-rpc.ts apps/client/src/App.tsx apps/client/src/components/Drawer.tsx apps/client/src/hooks/__tests__/useCmux.test.ts
 git commit -m "$(cat <<'EOF'
 feat(client): useCmux が SwitcherState を持ち workspace.select を捨てる (D1/D1.1)
 
-selectWorkspace / focusSurface / navigate* / panes / currentPane / listPanes を削除し、
-selectSurface / initializeFrom / reconcileWith の 3 つだけを公開する。
+selectWorkspace を削除し、selectSurface / initializeFrom / reconcileWith を公開する。
 currentWorkspace は保持する state ではなく foregroundWorkspaceRef からの導出値にする。
+currentSurface / focusSurface は新 state 上の移行用 shim として残す（Task 11 で削除）。
+これにより App.tsx が追随するまでの間も pnpm check が通る。
 
 createWorkspace は D1.1 の 3 手順に置き換える。workspace.create 自体が既定端末を
 作るので surface.create を呼ぶと端末が 2 つできる。レスポンスに type が無いため
@@ -2124,40 +2283,108 @@ describe('D2.1 topology 再取得ループ', () => {
     const { result } = renderHook(() => useCmux())
     hoisted.responses['surface.list'] = { surfaces: [] }
     hoisted.gate.open = false
-    let firstGen: number | undefined
-    let secondGen: number | undefined
+    let first: TopologySnapshot | undefined
+    let second: TopologySnapshot | undefined
     act(() => {
-      void result.current.requestTopologyRefresh().then((g) => {
-        firstGen = g
+      void result.current.requestTopologyRefresh().then((snap) => {
+        first = snap
       })
     })
     act(() => {
       // 1 本目の in-flight 中に来た要求。1 本目の完了で resolve してはいけない。
-      void result.current.requestTopologyRefresh().then((g) => {
-        secondGen = g
+      void result.current.requestTopologyRefresh().then((snap) => {
+        second = snap
       })
     })
     await act(async () => {
       hoisted.gate.release()
     })
-    expect(firstGen).toBe(1)
-    expect(secondGen).toBeUndefined() // まだ resolve していない
+    expect(first?.generation).toBe(1)
+    expect(second).toBeUndefined() // まだ resolve していない
     await act(async () => {
       hoisted.gate.release() // follow-up が適用される
     })
-    expect(secondGen).toBe(2)
+    expect(second?.generation).toBe(2)
   })
 
-  it('hidden 中はタイマーを張らない', async () => {
+  it('先行 refresh が失敗しても queued waiter は宙に浮かない（follow-up の成功で resolve）', async () => {
+    const { result } = renderHook(() => useCmux())
+    hoisted.gate.open = false
+    let first: string | undefined
+    let second: string | undefined
+    hoisted.errors['surface.list'] = { code: 'internal_error', message: 'boom' }
+    act(() => {
+      void result.current.requestTopologyRefresh().then(
+        () => { first = 'resolved' },
+        () => { first = 'rejected' },
+      )
+    })
+    act(() => {
+      void result.current.requestTopologyRefresh().then(
+        () => { second = 'resolved' },
+        () => { second = 'rejected' },
+      )
+    })
+    await act(async () => {
+      hoisted.gate.release() // 1 本目が失敗する
+    })
+    expect(first).toBe('rejected')
+    // ここで follow-up は成功させる
+    delete hoisted.errors['surface.list']
+    hoisted.responses['surface.list'] = { surfaces: [] }
+    hoisted.responses['workspace.list'] = { workspaces: [] }
+    await act(async () => {
+      hoisted.gate.release()
+    })
+    expect(second).toBe('resolved') // ← 旧設計ではここが永久に undefined になっていた
+  })
+
+  it('follow-up も失敗すれば queued waiter は reject される（settle せずに残らない）', async () => {
+    const { result } = renderHook(() => useCmux())
+    hoisted.errors['surface.list'] = { code: 'internal_error', message: 'boom' }
+    hoisted.gate.open = false
+    let second: string | undefined
+    act(() => {
+      void result.current.requestTopologyRefresh().catch(() => undefined)
+    })
+    act(() => {
+      void result.current.requestTopologyRefresh().then(
+        () => { second = 'resolved' },
+        () => { second = 'rejected' },
+      )
+    })
+    await act(async () => {
+      hoisted.gate.release()
+      hoisted.gate.release()
+    })
+    expect(second).toBe('rejected')
+  })
+
+  it('hidden 中はタイマーを張らず、復帰で再開する', async () => {
     vi.useFakeTimers()
-    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
+    hoisted.responses['surface.list'] = { surfaces: [] }
+    hoisted.responses['workspace.list'] = { workspaces: [] }
     renderHook(() => useCmux())
     await act(async () => {
-      vi.advanceTimersByTime(TOPOLOGY_POLL_INTERVAL * 3)
+      await vi.advanceTimersByTimeAsync(0)
     })
-    const listCalls = hoisted.sent.filter((s) => (JSON.parse(s) as { method: string }).method === 'surface.list')
-    expect(listCalls).toHaveLength(0)
+    const before = hoisted.sent.length
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(vi.getTimerCount()).toBe(0) // タイマーが張られていない
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(TOPOLOGY_POLL_INTERVAL * 3)
+    })
+    expect(hoisted.sent.length).toBe(before)
     Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(hoisted.sent.length).toBeGreaterThan(before) // 復帰で再開する
     vi.useRealTimers()
   })
 
@@ -2304,9 +2531,14 @@ export interface TopologySnapshot {
   // （完了後に下ろすと、follow-up の実行中に来た新しい T3 を落とす）。
   const inFlightRef = useRef(false)
   const dirtyRef = useRef(false)
+  // 適用に成功した回数。snapshot に載せて返すだけで、waiter の照合には使わない。
   const generationRef = useRef(0)
+  // 要求の通し番号。waiter はこれで束ねる。
+  // generation（成功時しか進まない）で waiter を照合すると、先行 refresh が失敗した
+  // ときに queued waiter の目標世代へ永久に到達せず、Promise が settle しなくなる。
+  const requestSeqRef = useRef(0)
   const waitersRef = useRef<
-    { generation: number; resolve: (s: TopologySnapshot) => void; reject: (e: Error) => void }[]
+    { seq: number; resolve: (s: TopologySnapshot) => void; reject: (e: Error) => void }[]
   >([])
 
   // 取得だけを行う。state には触らない。
@@ -2324,8 +2556,9 @@ export interface TopologySnapshot {
     try {
       for (;;) {
         dirtyRef.current = false // 開始前に消費する
-        // このサイクルが「包含する」要求の世代。ここより前に登録された waiter が対象。
-        const target = generationRef.current + 1
+        // このサイクルが「包含する」要求の範囲を、開始時点の seq で固定する。
+        // 実行中に来た要求は seq がこれより大きくなるので、次の follow-up が担当する。
+        const servedUpTo = requestSeqRef.current
         let snapshot: { surfaces: Surface[]; workspaces: Workspace[] } | null = null
         let failure: Error | null = null
         try {
@@ -2334,8 +2567,11 @@ export interface TopologySnapshot {
           failure = err instanceof Error ? err : new Error('topology refresh failed')
         }
 
-        const waiting = waitersRef.current.filter((w) => w.generation <= target)
-        waitersRef.current = waitersRef.current.filter((w) => w.generation > target)
+        // 成否にかかわらず、このサイクルが担当した waiter は必ず settle する。
+        // 「成功したときだけ進む世代」で照合すると、失敗時に queued waiter が
+        // 目標へ永久に到達せず Promise が宙に浮く。
+        const waiting = waitersRef.current.filter((w) => w.seq <= servedUpTo)
+        waitersRef.current = waitersRef.current.filter((w) => w.seq > servedUpTo)
 
         if (snapshot === null) {
           // 失敗しても既存の一覧は捨てない（一時的な通信不良でタブが全部消えるのを防ぐ）。
@@ -2345,11 +2581,11 @@ export interface TopologySnapshot {
           // E4: hidden 中に返った応答は state へ反映しない。要求元には失敗として返す。
           for (const w of waiting) w.reject(new Error('topology refresh discarded (hidden)'))
         } else {
-          generationRef.current = target
+          generationRef.current += 1
           setSurfaces(snapshot.surfaces)
           setWorkspaces(snapshot.workspaces)
           reconcileWith(snapshot.surfaces)
-          const applied: TopologySnapshot = { generation: target, ...snapshot }
+          const applied: TopologySnapshot = { generation: generationRef.current, ...snapshot }
           for (const w of waiting) w.resolve(applied)
         }
         if (!dirtyRef.current) break
@@ -2365,9 +2601,11 @@ export interface TopologySnapshot {
   // number ではなく一覧そのものを返すのは、呼び出し元の async callback が閉じ込めた React の
   // surfaces state が「呼び出し開始時の render の値」のままで、await 後も更新されないためである。
   const requestTopologyRefresh = useCallback((): Promise<TopologySnapshot> => {
-    const target = inFlightRef.current ? generationRef.current + 2 : generationRef.current + 1
+    // 自分の seq を採番してから登録する。実行中のサイクルは開始時の seq までしか
+    // 担当しないので、この要求は必然的に「次に始まるサイクル」が担当する。
+    const seq = ++requestSeqRef.current
     const promise = new Promise<TopologySnapshot>((resolve, reject) => {
-      waitersRef.current.push({ generation: target, resolve, reject })
+      waitersRef.current.push({ seq, resolve, reject })
     })
     dirtyRef.current = true
     void runRefresh()
@@ -2387,28 +2625,31 @@ export interface TopologySnapshot {
     }
     const tick = async () => {
       if (stopped) return
-      if (document.visibilityState === 'hidden') {
-        // hidden 中は取りに行かないが、タイマーは張り続ける（復帰時に自然に再開するため）。
-        arm(TOPOLOGY_POLL_INTERVAL)
-        return
-      }
+      // E4: hidden 中はタイマーを張らない。復帰時に onVisibility が張り直す。
+      if (document.visibilityState === 'hidden') return
       await requestTopologyRefresh().catch(() => undefined)
-      arm(TOPOLOGY_POLL_INTERVAL)
+      if (document.visibilityState !== 'hidden') arm(TOPOLOGY_POLL_INTERVAL)
     }
     void tick() // T1: 接続・再接続直後
     // T2: 復帰時。arm が既存タイマーを clear するので、3 イベントが重なっても 1 本のまま。
-    const resume = () => {
-      if (document.visibilityState !== 'hidden') arm(0)
+    const onVisibility = () => {
+      if (stopped) return
+      if (document.visibilityState === 'hidden') {
+        if (timer) clearTimeout(timer)
+        timer = undefined
+        return
+      }
+      arm(0)
     }
-    document.addEventListener('visibilitychange', resume)
-    window.addEventListener('pageshow', resume)
-    window.addEventListener('focus', resume)
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('pageshow', onVisibility)
+    window.addEventListener('focus', onVisibility)
     return () => {
       stopped = true
       if (timer) clearTimeout(timer)
-      document.removeEventListener('visibilitychange', resume)
-      window.removeEventListener('pageshow', resume)
-      window.removeEventListener('focus', resume)
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('pageshow', onVisibility)
+      window.removeEventListener('focus', onVisibility)
     }
   }, [status, requestTopologyRefresh])
 ```
@@ -2440,7 +2681,12 @@ refresh が reject したら**前面を変えず、エラーにもしない**（
 Run: `cd apps/client && pnpm vitest run src/hooks/__tests__/useCmux.test.ts`
 Expected: PASS。
 
-- [ ] **Step 5: コミット**
+- [ ] **Step 5: 型と lint、全体テスト**
+
+Run: `pnpm check && pnpm test`
+Expected: エラーなし。
+
+- [ ] **Step 6: コミット**
 
 ```bash
 git add apps/client/src/hooks/useCmux.ts apps/client/src/hooks/__tests__/useCmux.test.ts
@@ -2473,11 +2719,25 @@ EOF
 **Files:**
 - Create: `apps/client/src/hooks/useTerminalFeeds.ts`
 - Test: `apps/client/src/hooks/__tests__/useTerminalFeeds.test.ts`
-- Modify: `apps/client/src/hooks/useCmux.ts`（feed 更新用の `applyFeedResult` を dispatch に足す）
+- Modify: `apps/client/src/lib/view-state.ts`（`SwitcherAction` に feed 系 5 action と reducer 分岐を追加）
+- Modify: `apps/client/src/hooks/useCmux.ts`（5 本の dispatch callback を公開）
+- Test: `apps/client/src/lib/__tests__/view-state.test.ts`（reducer の遷移結果）
+- Test: `apps/client/src/hooks/__tests__/useCmux.test.ts`（callback が dispatch に届くこと）
 
 **Interfaces:**
-- Consumes: Task 4（`TerminalFeed` / `pollPlan`）, Task 6（`readGrid` / `readText` / `view` / `feeds`）, Task 5（`saveSurfaceScreen`）
-- Produces: `useTerminalFeeds({ status, view, surfaces, feeds, visibleRefs, pinned, historyLines, readGrid, readText, applyFeedResult, requestTopologyRefresh })` — 戻り値なし（副作用のみ）。Task 11 が `App.tsx` から呼ぶ。
+- Consumes: Task 4（`TerminalFeed` / `pollPlan` / `createSwitcherReducer`）, Task 6（`readGrid` / `readText` / `view` / `feeds`）, Task 7（`requestTopologyRefresh` / `TopologySnapshot`）, Task 5（`saveSurfaceScreen`）
+- Produces:
+  - `lib/view-state.ts`: `SwitcherAction` に `feedResult` / `feedHistory` / `feedError` / `disconnected` / `repromote` を追加
+  - `useCmux()` の戻り値に **5 本の callback** を追加:
+    ```ts
+    applyFeedResult: (a: { ref: string; epoch: number; grid: RenderGrid | null; now: number }) => void
+    applyFeedHistory: (a: { ref: string; epoch: number; history: string }) => void
+    applyFeedError:   (a: { ref: string; epoch: number }) => void
+    markDisconnected: () => void
+    repromote:        () => void
+    ```
+  - `hooks/useTerminalFeeds.ts`: `useTerminalFeeds(props: UseTerminalFeedsProps): void`（副作用のみ、戻り値なし）
+- Task 11 が `App.tsx` で `useCmux()` の戻り値をそのまま `useTerminalFeeds` へ渡す。
 
 `App.tsx:195-275` の単一 effect を置き換える。既存の要件をすべて引き継ぐ:
 - in-flight レスポンスが切替後の状態を上書きしないためのキャンセル（`fe53249` の回帰）→ **epoch の世代照合**（F7）で置き換える
@@ -2536,7 +2796,12 @@ const feedOf = (over: Partial<TerminalFeed> = {}): TerminalFeed => ({
   ...over,
 })
 
-const surfaceOf = (ref: string, type = 'terminal'): SurfaceLike => ({ ref, type, workspace_ref: 'workspace:1' })
+const surfaceOf = (ref: string, type = 'terminal', index = 0): SurfaceLike => ({
+  ref,
+  type,
+  workspace_ref: 'workspace:1',
+  index,
+})
 
 interface Harness {
   props: Parameters<typeof useTerminalFeeds>[0]
@@ -2560,7 +2825,7 @@ function harness(opts: {
   readGrid?: ReturnType<typeof vi.fn>
 }): Harness {
   const view: ViewState = {
-    subscriptions: opts.subscribed.map((ref, i) => ({ ref, lastForegroundAt: 1000 + i })),
+    subscriptions: opts.subscribed.map((ref, i) => ({ ref, lastForegroundAt: 1000 + i, treeIndex: i })),
     foreground: opts.visible[0] ?? null,
     foregroundWorkspaceRef: 'workspace:1',
   }
@@ -2587,7 +2852,7 @@ function harness(opts: {
     props: {
       status: 'connected',
       view,
-      surfaces: opts.surfaces ?? opts.subscribed.map((r) => surfaceOf(r)),
+      surfaces: opts.surfaces ?? opts.subscribed.map((r, i) => surfaceOf(r, 'terminal', i)),
       feeds,
       visibleRefs: opts.visible,
       pinned: opts.pinned ?? true,
@@ -2655,31 +2920,38 @@ describe('useTerminalFeeds — 実行規律', () => {
     expect(refs).not.toContain('surface:9')
   })
 
-  it('E4: hidden 中に背面のタイマーが発火しても、復帰後にポーリングが再開する', async () => {
+  it('E4: hidden になったら全タイマーを clear し、復帰で前面即時・背面 interval+stagger で再開する', async () => {
     const h = harness({ subscribed: ['surface:1', 'surface:2'], visible: ['surface:1'], pinned: false })
     renderHook(() => useTerminalFeeds(h.props))
     await act(async () => {
       await vi.advanceTimersByTimeAsync(BACKGROUND_STAGGER * 2)
     })
     h.readGrid.mockClear()
-    // hidden にして、背面の 3 秒周期を何回もまたぐ
     Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    // タイマーが「張られていない」ことを本数で確認する（RPC が 0 件なだけでは足りない）
+    expect(vi.getTimerCount()).toBe(0)
     await act(async () => {
       await vi.advanceTimersByTimeAsync(BACKGROUND_POLL_INTERVAL * 4)
     })
     expect(h.readGrid).not.toHaveBeenCalled()
-    // 復帰させる
+
     Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
     await act(async () => {
       document.dispatchEvent(new Event('visibilitychange'))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(h.readGrid.mock.calls.map((c) => c[0])).toEqual(['surface:1']) // 前面は即時
+    await act(async () => {
       await vi.advanceTimersByTimeAsync(BACKGROUND_POLL_INTERVAL + BACKGROUND_STAGGER * 2)
     })
-    // 前面は即時、背面も次の周期で再開している（永久停止しない）
-    expect(h.readGrid.mock.calls.map((c) => c[0])).toContain('surface:1')
-    expect(h.readGrid.mock.calls.map((c) => c[0])).toContain('surface:2')
+    expect(h.readGrid.mock.calls.map((c) => c[0])).toContain('surface:2') // 背面も再開する
   })
 
-  it('E4: 取得中に hidden になった応答は反映しないが、タイマーは止まらない', async () => {
+  it('E4: readGrid の待機中に hidden になった応答は反映しない', async () => {
     let resolveGrid: ((g: RenderGrid | null) => void) | undefined
     const readGrid = vi
       .fn()
@@ -2701,7 +2973,27 @@ describe('useTerminalFeeds — 実行規律', () => {
       document.dispatchEvent(new Event('visibilitychange'))
       await vi.advanceTimersByTimeAsync(10)
     })
-    expect(h.applyFeedResult).toHaveBeenCalled() // 止まっていない
+    expect(h.applyFeedResult).toHaveBeenCalled() // 復帰で再開する
+  })
+
+  it('E4: read_text の待機中に hidden になったら history も localStorage も更新しない', async () => {
+    let resolveText: ((t: string) => void) | undefined
+    const h = harness({ subscribed: ['surface:1'], visible: ['surface:1'], pinned: true })
+    h.readText.mockImplementationOnce(() => new Promise<string>((r) => { resolveText = r }))
+    const setItem = vi.spyOn(Storage.prototype, 'setItem')
+    renderHook(() => useTerminalFeeds(h.props))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+    setItem.mockClear()
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
+    await act(async () => {
+      resolveText?.('late history')
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(h.applyFeedHistory).not.toHaveBeenCalled()
+    expect(setItem.mock.calls.filter((c) => (c[0] as string).startsWith('cmux-surface-cache:'))).toHaveLength(0)
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
   })
 
   it('ref ごとのタイマーは常に 1 本（復帰イベントが重なっても増殖しない）', async () => {
@@ -3051,6 +3343,28 @@ Expected: FAIL（`useTerminalFeeds` と feed 系 action が存在しない）。
   | { type: 'repromote'; now: number }  // F9
 ```
 
+**`useCmux` 側の配線**（Task 6 で入れた `dispatch` をそのまま使う。すべて `useCallback`）:
+
+```ts
+  const applyFeedResult = useCallback(
+    (a: { ref: string; epoch: number; grid: RenderGrid | null; now: number }) =>
+      dispatch({ type: 'feedResult', ...a }),
+    [],
+  )
+  const applyFeedHistory = useCallback(
+    (a: { ref: string; epoch: number; history: string }) => dispatch({ type: 'feedHistory', ...a }),
+    [],
+  )
+  const applyFeedError = useCallback(
+    (a: { ref: string; epoch: number }) => dispatch({ type: 'feedError', ...a }),
+    [],
+  )
+  const markDisconnected = useCallback(() => dispatch({ type: 'disconnected' }), [])
+  const repromote = useCallback(() => dispatch({ type: 'repromote', now: Date.now() }), [])
+```
+
+**reducer の分岐**（`createSwitcherReducer` の中。`added` の計算より**前**に早期 return する）:
+
 ```ts
     // F5 / F5n / F7 / activity
     if (action.type === 'feedResult') {
@@ -3182,13 +3496,10 @@ export function useTerminalFeeds(props: UseTerminalFeedsProps): void {
 
     const cycle = async (ref: string, intervalMs: number) => {
       if (stopped) return
-      // E4: hidden 中は RPC を投げない。ただし**タイマーは張り続ける** —
-      // ここで return して予約しないと、hidden 中に発火した背面購読が
-      // 復帰後も永久に止まったままになる（resume は前面しか再開しないため）。
-      if (document.visibilityState === 'hidden') {
-        arm(ref, intervalMs, intervalMs)
-        return
-      }
+      // E4: hidden 中はタイマーを張らない。ここで予約しないでよいのは、
+      // 復帰ハンドラ（下の resume）が **全 plan entry** を張り直すからである
+      // （前面は 0ms、背面は interval + stagger）。
+      if (document.visibilityState === 'hidden') return
       // E2: サーフェスごとの in-flight は常に 1 件まで。
       if (inFlightRef.current.has(ref)) {
         arm(ref, intervalMs, intervalMs)
@@ -3225,7 +3536,10 @@ export function useTerminalFeeds(props: UseTerminalFeedsProps): void {
         // read_text 自体が失敗するため、いずれも取得しない。
         if (isVisible && p.pinned && grid && grid.active_screen !== 'alternate') {
           const text = await p.readText(ref, { scrollback: true, lines: p.historyLines })
-          if (stopped || !latest.current.pinned) return
+          // read_text の待機中に hidden になった応答も反映しない（E4）。
+          // grid 側だけ確認して history 側を素通しすると、hidden 中に state と
+          // localStorage が更新される。
+          if (stopped || !latest.current.pinned || document.visibilityState === 'hidden') return
           p.applyFeedHistory({ ref, epoch, history: stripVisibleScreen(text, visibleLineCount(grid)) })
           if (text !== lastScrollbackRef.current.get(ref)) {
             lastScrollbackRef.current.set(ref, text)
@@ -3248,7 +3562,8 @@ export function useTerminalFeeds(props: UseTerminalFeedsProps): void {
       } finally {
         inFlightRef.current.delete(ref)
         // E1: 完了してから次回を予約する。開始時刻を起点に遅れを取り戻さない。
-        arm(ref, intervalMs, intervalMs)
+        // hidden 中は張らない（復帰時に resume が全件張り直す。E4）。
+        if (document.visibilityState !== 'hidden') arm(ref, intervalMs, intervalMs)
       }
     }
 
@@ -3259,28 +3574,36 @@ export function useTerminalFeeds(props: UseTerminalFeedsProps): void {
       arm(entry.ref, entry.intervalMs, delay)
     }
 
-    // E4: 復帰時は前面のみ即時再取得し、背面は次の周期から。
-    // **背面も必ず張り直す** — hidden 中に発火した背面のタイマーは「interval 後に再予約」
-    // されているが、復帰直後にまとめて発火すると burst になるので stagger を付け直す。
-    const resume = () => {
-      if (document.visibilityState === 'hidden') return
+    // E4: hidden になったら全タイマーを clear し、復帰したら全件を張り直す。
+    // 「前面のみ再開」ではいけない — 背面を張り直さないと復帰後も止まったままになる。
+    // 前面は 0ms（即時再取得）、背面は interval + stagger（次の周期から、burst を避ける）。
+    const clearAll = () => {
+      for (const t of timers.values()) clearTimeout(t)
+      timers.clear()
+    }
+    const onVisibility = () => {
+      if (stopped) return
+      if (document.visibilityState === 'hidden') {
+        clearAll()
+        return
+      }
       let bg = 0
       for (const entry of plan) {
         const isVisible = latest.current.visibleRefs.includes(entry.ref)
         arm(entry.ref, entry.intervalMs, isVisible ? 0 : entry.intervalMs + bg++ * BACKGROUND_STAGGER)
       }
     }
-    document.addEventListener('visibilitychange', resume)
-    window.addEventListener('pageshow', resume)
-    window.addEventListener('focus', resume)
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('pageshow', onVisibility)
+    window.addEventListener('focus', onVisibility)
 
     return () => {
       stopped = true
       for (const timer of timers.values()) clearTimeout(timer)
       timers.clear()
-      document.removeEventListener('visibilitychange', resume)
-      window.removeEventListener('pageshow', resume)
-      window.removeEventListener('focus', resume)
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('pageshow', onVisibility)
+      window.removeEventListener('focus', onVisibility)
     }
     // feeds は依存に入れない（毎ポーリング変わるため。最新値は latest.current から読む）。
     // biome-ignore lint/correctness/useExhaustiveDependencies: planKey が plan の同一性を代表する
@@ -3300,13 +3623,19 @@ export function useTerminalFeeds(props: UseTerminalFeedsProps): void {
 
 - [ ] **Step 5: テストが通ることを確認する**
 
-Run: `cd apps/client && pnpm vitest run src/hooks/__tests__/useTerminalFeeds.test.ts`
+Run: `cd apps/client && pnpm vitest run src/hooks/__tests__/useTerminalFeeds.test.ts src/lib/__tests__/view-state.test.ts src/hooks/__tests__/useCmux.test.ts`
 Expected: PASS。
 
-- [ ] **Step 6: コミット**
+- [ ] **Step 6: 型と lint、全体テスト**
+
+Run: `pnpm check && pnpm test`
+Expected: エラーなし。`useTerminalFeeds` はこの時点ではまだどこからも呼ばれない
+（`App.tsx` からの配線は Task 11）。shim の旧ポーリングと二重に走ることはない。
+
+- [ ] **Step 7: コミット**
 
 ```bash
-git add apps/client/src/hooks/useTerminalFeeds.ts apps/client/src/hooks/__tests__/useTerminalFeeds.test.ts apps/client/src/lib/view-state.ts
+git add apps/client/src/hooks/useTerminalFeeds.ts apps/client/src/hooks/__tests__/useTerminalFeeds.test.ts apps/client/src/lib/view-state.ts apps/client/src/lib/__tests__/view-state.test.ts apps/client/src/hooks/useCmux.ts apps/client/src/hooks/__tests__/useCmux.test.ts
 git commit -m "$(cat <<'EOF'
 feat(client): サーフェスごとの取得ループを useTerminalFeeds に切り出す (D4/D3.1)
 
@@ -3334,7 +3663,14 @@ EOF
 
 **Files:**
 - Modify: `apps/client/src/components/TabBar.tsx`
+- Modify: `apps/client/src/App.tsx`（**同じタスクで呼び出し側も新 props へ移行する**）
 - Test: `apps/client/src/components/__tests__/TabBar.test.tsx`（新規。現在テストが無い）
+
+> **`App.tsx` を同じタスクに含めるのは、`TabBar` の必須 props を変えると呼び出し側が
+> 型エラーになるからである。** コンポーネント側に互換 props を残す方式は取らない
+> （Task 11 で二度手間になる）。この時点の `App.tsx` は shim の `currentSurface` を
+> `foreground` に、`focusSurface` を `selectSurface` に渡すだけの最小限の配線でよい。
+> 5 表示ケースの作り替えは Task 11 で行う。
 
 **Interfaces:**
 - Consumes: Task 6 の `Surface`（`workspace_ref` / `workspace_title` / `type`）, Task 4 の `TerminalFeed`
@@ -3370,6 +3706,7 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
+import type { TerminalFeed } from '../../lib/view-state'
 import { TabBar } from '../TabBar'
 
 const surfaces = [
@@ -3452,14 +3789,18 @@ describe('TabBar', () => {
   })
 
   it('status が error のタブはドットが警告色になる', () => {
-    const feeds = new Map([['surface:1', { status: 'error', source: 'memory', grid: null, history: '', updatedAt: null, activity: false, epoch: 1, promotedAt: 0 }]])
+    const feeds = new Map<string, TerminalFeed>([
+      ['surface:1', { status: 'error', source: 'memory', grid: null, history: '', updatedAt: null, activity: false, linesHash: '', epoch: 1, promotedAt: 0 }],
+    ])
     const { container } = render(<TabBar {...base} feeds={feeds} />)
     const dot = container.querySelector('[data-testid="live-dot"]') as HTMLElement
     expect(dot.style.backgroundColor).toContain('--color-warning')
   })
 
   it('activity のあるタブはドットが 6px に拡大する', () => {
-    const feeds = new Map([['surface:1', { status: 'live', source: 'memory', grid: null, history: '', updatedAt: null, activity: true, epoch: 1, promotedAt: 0 }]])
+    const feeds = new Map<string, TerminalFeed>([
+      ['surface:1', { status: 'live', source: 'memory', grid: null, history: '', updatedAt: null, activity: true, linesHash: '', epoch: 1, promotedAt: 0 }],
+    ])
     const { container } = render(<TabBar {...base} feeds={feeds} />)
     const dot = container.querySelector('[data-testid="live-dot"]') as HTMLElement
     expect(dot.style.width).toBe('6px')
@@ -3500,10 +3841,15 @@ function tabLabel(surface: Surface, subscribed: boolean): string {
 Run: `cd apps/client && pnpm vitest run src/components/__tests__/TabBar.test.tsx`
 Expected: PASS。
 
-- [ ] **Step 5: コミット**
+- [ ] **Step 5: 型と lint、全体テスト**
+
+Run: `pnpm check && pnpm test`
+Expected: エラーなし。
+
+- [ ] **Step 6: コミット**
 
 ```bash
-git add apps/client/src/components/TabBar.tsx apps/client/src/components/__tests__/TabBar.test.tsx
+git add apps/client/src/components/TabBar.tsx apps/client/src/App.tsx apps/client/src/components/__tests__/TabBar.test.tsx
 git commit -m "$(cat <<'EOF'
 feat(client): タブ行をワークスペース横断にし購読状態を可視化する (UR1/UR2)
 
@@ -3527,6 +3873,7 @@ EOF
 **Files:**
 - Modify: `apps/client/src/components/Drawer.tsx`（ワークスペース行を展開折りたたみに、配下にサーフェス行）
 - Modify: `apps/client/src/components/Header.tsx`（`ワークスペース名 · 端末名` の 1 行 2 要素）
+- Modify: `apps/client/src/App.tsx`（**同じタスクで呼び出し側も新 props へ移行する**。Task 9 と同じ理由）
 - Test: `apps/client/src/components/__tests__/Drawer.test.tsx`
 
 **Interfaces:**
@@ -3587,10 +3934,15 @@ Expected: FAIL。
 Run: `cd apps/client && pnpm vitest run src/components/__tests__/Drawer.test.tsx`
 Expected: PASS。
 
-- [ ] **Step 5: コミット**
+- [ ] **Step 5: 型と lint、全体テスト**
+
+Run: `pnpm check && pnpm test`
+Expected: エラーなし。
+
+- [ ] **Step 6: コミット**
 
 ```bash
-git add apps/client/src/components/Drawer.tsx apps/client/src/components/Header.tsx apps/client/src/components/__tests__/Drawer.test.tsx
+git add apps/client/src/components/Drawer.tsx apps/client/src/components/Header.tsx apps/client/src/App.tsx apps/client/src/components/__tests__/Drawer.test.tsx
 git commit -m "$(cat <<'EOF'
 feat(client): ドロワーを展開式にし、ヘッダーを WS 名 · 端末名の 1 行 2 要素にする
 
@@ -3677,6 +4029,12 @@ describe('describeFeed — D3.1 の 5 表示ケース', () => {
   it('5. error で updatedAt が無ければ「接続なし」だけを出す', () => {
     const d = describeFeed(feedOf({ status: 'error', source: 'none', updatedAt: null }))
     expect(d).toEqual({ kind: 'message', message: '接続なし', freshness: '接続なし' })
+  })
+
+  it('5. error/none でも updatedAt があれば「接続なし · 最終 HH:MM」を出す（F5n の後で切断した場合）', () => {
+    const d = describeFeed(feedOf({ status: 'error', source: 'none', updatedAt: at }))
+    expect(d.kind).toBe('message')
+    expect(d.freshness).toMatch(/^接続なし · 最終 \d{2}:\d{2}$/)
   })
 
   it('feed が無い（前面が browser など）ときは null を返す', () => {
