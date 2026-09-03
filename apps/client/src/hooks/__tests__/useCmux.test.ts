@@ -318,10 +318,19 @@ describe('D1 workspace.select を一度も呼ばない', () => {
     expect('selectWorkspace' in result.current).toBe(false)
   })
 
-  it('移行用 shim（currentSurface / focusSurface）はまだ残っている', () => {
+  it('移行用 shim と旧 pane/navigation API は公開 API から消えている', () => {
     const { result } = renderHook(() => useCmux())
-    expect('currentSurface' in result.current).toBe(true)
-    expect(typeof result.current.focusSurface).toBe('function')
+    for (const key of [
+      'currentSurface',
+      'focusSurface',
+      'panes',
+      'currentPane',
+      'listPanes',
+      'navigatePane',
+      'navigateSurface',
+    ]) {
+      expect(key in result.current).toBe(false)
+    }
   })
 
   it('closeWorkspace は workspace と surface の一覧を各 1 回更新する', async () => {

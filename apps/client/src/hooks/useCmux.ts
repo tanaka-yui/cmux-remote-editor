@@ -3,14 +3,12 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'r
 import {
   type CmuxNotification,
   createRpcRequest,
-  type Pane,
   parseRpcResponse,
   type Surface,
   type Workspace,
 } from '../lib/cmux-rpc'
 import type { RenderGrid } from '../lib/render-grid'
 import type { RpcError } from '../lib/rpc-error'
-import { resolveSelectedRef } from '../lib/selection'
 import { loadSurfaceScreen } from '../lib/surface-cache'
 import { getAuthToken } from '../lib/token'
 import {
@@ -41,8 +39,6 @@ export interface TopologySnapshot {
 
 export function useCmux() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
-  const [panes, setPanes] = useState<Pane[]>([])
-  const [currentPane, setCurrentPane] = useState<string | null>(null)
   const [surfaces, setSurfaces] = useState<Surface[]>([])
   const [notifications, setNotifications] = useState<CmuxNotification[]>([])
   const [topologyReady, setTopologyReady] = useState(false)
@@ -182,38 +178,6 @@ export function useCmux() {
     setWorkspaces(wsList)
     return wsList
   }, [rpc])
-
-  const listPanes = useCallback(
-    async (workspaceRef?: string) => {
-      const params: Record<string, unknown> = {}
-      if (workspaceRef) params.workspace_ref = workspaceRef
-      const result = (await rpc('pane.list', params)) as { panes: Pane[] }
-      const paneList = result.panes ?? []
-      setPanes(paneList)
-      setCurrentPane((prev) =>
-        resolveSelectedRef(
-          prev,
-          paneList,
-          (p) => p.selected_surface_ref,
-          (p) => !!p.focused,
-        ),
-      )
-      return paneList
-    },
-    [rpc],
-  )
-
-  // ---- 移行用 shim。Task 11 で削除する。新しいコードから使わないこと。----
-  /** @deprecated Task 11 で削除。view.foreground を使う */
-  const currentSurface = switcher.view.foreground
-  /** @deprecated Task 11 で削除。selectSurface(surface) を使う */
-  const focusSurface = useCallback(
-    (ref: string) => {
-      const surface = surfaces.find((s) => s.ref === ref)
-      if (surface) selectSurface(surface)
-    },
-    [surfaces, selectSurface],
-  )
 
   const listSurfaces = useCallback(async () => {
     const result = (await rpc('surface.list')) as { surfaces?: Surface[] }
@@ -437,37 +401,12 @@ export function useCmux() {
     return list
   }, [rpc])
 
-  const navigatePane = useCallback(
-    async (direction: 'next' | 'prev') => {
-      if (panes.length === 0) return
-      const idx = panes.findIndex((p) => p.selected_surface_ref === currentPane)
-      const nextIdx = direction === 'next' ? (idx + 1) % panes.length : (idx - 1 + panes.length) % panes.length
-      const target = panes[nextIdx]
-      if (target) await focusSurface(target.selected_surface_ref)
-    },
-    [panes, currentPane, focusSurface],
-  )
-
-  const navigateSurface = useCallback(
-    async (direction: 'next' | 'prev') => {
-      if (surfaces.length === 0) return
-      const idx = surfaces.findIndex((s) => s.ref === currentSurface)
-      const nextIdx = direction === 'next' ? (idx + 1) % surfaces.length : (idx - 1 + surfaces.length) % surfaces.length
-      const target = surfaces[nextIdx]
-      if (target) await focusSurface(target.ref)
-    },
-    [surfaces, currentSurface, focusSurface],
-  )
-
   return {
     status: status as ConnectionStatus,
     topologyReady,
     workspaces,
     currentWorkspace,
-    panes,
-    currentPane,
     surfaces,
-    currentSurface,
     notifications,
     view: switcher.view,
     feeds: switcher.feeds,
@@ -482,19 +421,15 @@ export function useCmux() {
     requestTopologyRefresh,
     listWorkspaces,
     createWorkspace,
-    listPanes,
     listSurfaces,
     createSurface,
     closeSurface,
     closeWorkspace,
-    focusSurface,
     readText,
     readGrid,
     sendText,
     sendKey,
     getTree,
     listNotifications,
-    navigatePane,
-    navigateSurface,
   }
 }
