@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ConnectionStatus } from '../hooks/useWebSocket'
 
 // connected からの一瞬の切断（即再接続）でステータス表示をチラつかせない猶予時間（ms）。
@@ -21,22 +21,26 @@ export function ConnectionIndicator({ status, freshness }: ConnectionIndicatorPr
   // connected→切断のときだけ OFFLINE_GRACE_MS 遅延して反映する。
   const [shownStatus, setShownStatus] = useState<ConnectionStatus>(status)
   const [shownFreshness, setShownFreshness] = useState<string | null>(freshness)
+  const latestFreshness = useRef(freshness)
+
   useEffect(() => {
-    if (status === shownStatus) {
-      setShownFreshness(freshness)
-      return
-    }
-    if (status === 'connected' || shownStatus !== 'connected') {
+    latestFreshness.current = freshness
+    if (status === shownStatus) setShownFreshness(freshness)
+  }, [freshness, status, shownStatus])
+
+  useEffect(() => {
+    if (status === shownStatus) return
+    if (shownStatus !== 'connected' || status !== 'disconnected') {
       setShownStatus(status)
-      setShownFreshness(freshness)
+      setShownFreshness(latestFreshness.current)
       return
     }
     const t = setTimeout(() => {
       setShownStatus(status)
-      setShownFreshness(freshness)
+      setShownFreshness(latestFreshness.current)
     }, OFFLINE_GRACE_MS)
     return () => clearTimeout(t)
-  }, [freshness, status, shownStatus])
+  }, [status, shownStatus])
 
   const config = STATUS_CONFIG[shownStatus]
 
