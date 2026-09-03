@@ -3,6 +3,7 @@ import type { RenderGrid } from '../render-grid'
 import type { CachedScreen } from '../surface-cache'
 import {
   createSwitcherReducer,
+  describeFeed,
   focus,
   initialize,
   MAX_LIVE_SUBSCRIPTIONS,
@@ -43,6 +44,19 @@ const withCache = (refs: Record<string, CachedScreen>) => (ref: string) => refs[
 const emptyState = (): SwitcherState => ({
   view: { subscriptions: [], foreground: null, foregroundWorkspaceRef: null },
   feeds: new Map(),
+})
+
+const feedOf = (overrides: Partial<TerminalFeed> = {}): TerminalFeed => ({
+  grid: null,
+  history: '',
+  updatedAt: null,
+  activity: false,
+  contentHash: '',
+  status: 'loading',
+  source: 'none',
+  epoch: 1,
+  promotedAt: 0,
+  ...overrides,
 })
 
 // 不変条件は各テストの末尾で必ず呼ぶ。
@@ -313,6 +327,68 @@ describe('pollPlan', () => {
   })
 })
 
+describe('describeFeed — D3.1 の 5 表示ケース', () => {
+  const at = 1_700_000_000_000
+
+  function must(feed: TerminalFeed): NonNullable<ReturnType<typeof describeFeed>> {
+    const description = describeFeed(feed)
+    if (description === null) throw new Error('describeFeed returned null')
+    return description
+  }
+
+  it('1. live/memory は鮮度ラベルを出さない', () => {
+    const description = must(feedOf({ status: 'live', source: 'memory', grid: grid('x'), updatedAt: at }))
+    expect(description).toEqual({ kind: 'grid', freshness: null })
+  })
+
+  it('2. warming/memory は「更新: HH:MM:SS」を出す', () => {
+    const description = must(feedOf({ status: 'warming', source: 'memory', grid: grid('x'), updatedAt: at }))
+    expect(description.kind).toBe('grid')
+    expect(description.freshness).toMatch(/^更新: \d{2}:\d{2}:\d{2}$/)
+  })
+
+  it('3. warming/cache は「オフライン時点の内容」を出す', () => {
+    const description = must(feedOf({ status: 'warming', source: 'cache', grid: grid('x'), updatedAt: at }))
+    expect(description.kind).toBe('grid')
+    expect(description.freshness).toMatch(/^オフライン時点の内容 · 最終 \d{2}:\d{2}$/)
+  })
+
+  it('4. loading/none は「読み込み中」を出し、空白にしない', () => {
+    const description = must(feedOf({ status: 'loading', source: 'none' }))
+    expect(description).toEqual({ kind: 'message', message: '読み込み中', freshness: null })
+  })
+
+  it('4. live/none は「端末が停止しています」を出す（F5n）', () => {
+    const description = must(feedOf({ status: 'live', source: 'none', updatedAt: at }))
+    expect(description).toEqual({
+      kind: 'message',
+      message: '表示できる内容がありません（端末が停止しています）',
+      freshness: null,
+    })
+  })
+
+  it('5. error で描けるものがあれば残し、「接続なし · 最終 HH:MM」を出す', () => {
+    const description = must(feedOf({ status: 'error', source: 'memory', grid: grid('x'), updatedAt: at }))
+    expect(description.kind).toBe('grid')
+    expect(description.freshness).toMatch(/^接続なし · 最終 \d{2}:\d{2}$/)
+  })
+
+  it('5. error で updatedAt が無ければ「接続なし」だけを出す', () => {
+    const description = must(feedOf({ status: 'error', source: 'none', updatedAt: null }))
+    expect(description).toEqual({ kind: 'message', message: '接続なし', freshness: '接続なし' })
+  })
+
+  it('5. error/none でも updatedAt があれば「接続なし · 最終 HH:MM」を出す（F5n 後の切断）', () => {
+    const description = must(feedOf({ status: 'error', source: 'none', updatedAt: at }))
+    expect(description.kind).toBe('message')
+    expect(description.freshness).toMatch(/^接続なし · 最終 \d{2}:\d{2}$/)
+  })
+
+  it('feed が無い（前面が browser など）ときは null を返す', () => {
+    expect(describeFeed(undefined)).toBeNull()
+  })
+})
+
 describe('createSwitcherReducer — added 規則', () => {
   it('非購読 terminal を選ぶと F3（feed も cache も無い）', () => {
     const reduce = createSwitcherReducer(noCache)
@@ -423,6 +499,65 @@ describe('createSwitcherReducer — added 規則', () => {
     expect(feed.promotedAt).toBe(3000)
   })
 
+  it('F1: live/memory の保持 feed を再昇格すると warming/memory になり epoch と promotedAt が進む', () => {
+    const reduce = createSwitcherReducer(noCache)
+    const surfaces = [term('surface:1'), term('surface:2')]
+    let state = reduce(emptyState(), {
+      type: 'initialize',
+      surfaces,
+      preferredRef: 'surface:1',
+      now: 1000,
+    })
+    const live = feedOf({
+      ...(state.feeds.get('surface:1') as TerminalFeed),
+      grid: grid('memory'),
+      updatedAt: 1500,
+      contentHash: '[memory]',
+      status: 'live',
+      source: 'memory',
+    })
+    state = { ...state, feeds: new Map(state.feeds).set('surface:1', live) }
+    state = reduce(state, { type: 'select', surface: surfaces[1] as SurfaceLike, now: 2000, cap: 1 })
+    expect(state.view.subscriptions.map((subscription) => subscription.ref)).toEqual(['surface:2'])
+
+    state = reduce(state, { type: 'select', surface: surfaces[0] as SurfaceLike, now: 3000, cap: 1 })
+
+    expect(state.feeds.get('surface:1')).toEqual({
+      ...live,
+      activity: false,
+      status: 'warming',
+      source: 'memory',
+      epoch: live.epoch + 1,
+      promotedAt: 3000,
+    })
+  })
+
+  it('F2 の cache contentHash は row_spans だけに依存し、cursor だけの差では変わらない', () => {
+    const firstGrid: RenderGrid = { ...grid('x'), cursor: { row: 0, column: 0, visible: true } }
+    const secondGrid: RenderGrid = { ...grid('x'), cursor: { row: 0, column: 1, visible: false } }
+    const reduce = createSwitcherReducer(
+      withCache({
+        'surface:1': { grid: firstGrid, updatedAt: 500 },
+        'surface:2': { grid: secondGrid, updatedAt: 600 },
+      }),
+    )
+    const first = reduce(emptyState(), {
+      type: 'initialize',
+      surfaces: [term('surface:1')],
+      preferredRef: null,
+      now: 1000,
+    })
+    const second = reduce(emptyState(), {
+      type: 'initialize',
+      surfaces: [term('surface:2')],
+      preferredRef: null,
+      now: 1000,
+    })
+    const expectedHash = '[{"row":0,"column":0,"style_id":0,"cell_width":1,"text":"x"}]'
+    expect((first.feeds.get('surface:1') as TerminalFeed).contentHash).toBe(expectedHash)
+    expect((second.feeds.get('surface:2') as TerminalFeed).contentHash).toBe(expectedHash)
+  })
+
   it('F5n 後（source=none）の再昇格は、cache が残っていても F3 に入る', () => {
     const reduce = createSwitcherReducer(withCache({ 'surface:1': { grid: grid('x'), updatedAt: 500 } }))
     const surfaces = [term('surface:1'), term('surface:2')]
@@ -459,5 +594,32 @@ describe('createSwitcherReducer — added 規則', () => {
     for (const sub of s.view.subscriptions) {
       expect(s.feeds.has(sub.ref)).toBe(true)
     }
+  })
+
+  it('LRU は promotedAt が最古でも購読中かつ非前面の feed を退避しない', () => {
+    const reduce = createSwitcherReducer(noCache)
+    const retainedFeeds = new Map<string, TerminalFeed>()
+    for (let i = 0; i < MAX_RETAINED_FEEDS; i++) {
+      retainedFeeds.set(`surface:${i}`, feedOf({ promotedAt: i === 0 ? 0 : 100 + i }))
+    }
+    const state: SwitcherState = {
+      view: {
+        subscriptions: [{ ref: 'surface:0', lastForegroundAt: 1000, treeIndex: 0 }],
+        foreground: 'surface:99',
+        foregroundWorkspaceRef: 'workspace:1',
+      },
+      feeds: retainedFeeds,
+    }
+
+    const next = reduce(state, {
+      type: 'select',
+      surface: term(`surface:${MAX_RETAINED_FEEDS}`),
+      now: 2000,
+      cap: MAX_LIVE_SUBSCRIPTIONS,
+    })
+
+    expect(next.feeds.size).toBe(MAX_RETAINED_FEEDS)
+    expect(next.feeds.has('surface:0')).toBe(true)
+    expect(next.feeds.has('surface:1')).toBe(false)
   })
 })
