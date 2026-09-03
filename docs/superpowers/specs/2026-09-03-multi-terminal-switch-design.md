@@ -189,6 +189,10 @@ cmux 側の端末は閉じないし、タブ行からも消えない（ドット
 クライアントは `listSurfaces()` を**引数なし**で呼ぶようになる（`App.tsx:118-120` のコメントが
 避けていた「他ワークスペースのタブ混入」は、UR1 では混入ではなく仕様である）。
 
+なお `ws.ts` の `TreeWorkspace`（`ws.ts:23-27`）は `ref` と `panes` しか型に起こしていないが、
+これはサーバーが他を使っていないだけで、**実レスポンスには `title` / `selected` / `id` が含まれる**
+（付録 A の `system.tree` 実出力で確認済み）。型を広げれば取り出せる。
+
 ### D6. 新規端末の作成だけは `workspace.select` を伴う（D1 の唯一の例外）
 
 P6 のとおり `surface.create` は `workspace_ref` を無視して選択中ワークスペースに作る。
@@ -223,6 +227,21 @@ P6 のとおり `surface.create` は `workspace_ref` を無視して選択中ワ
   **`surface.create` だけは `workspace_ref` を無視して選択中ワークスペースに作る**という例外を書く。
 - `hooks/useCmux.ts:101-103` の同趣旨のコメントを削除（そのコードごと消えるため、残骸を残さない）。
 - 併せて、この事実がいつどう確認されたか（本 spec の P1〜P6）を辿れるようにする。
+
+### D10. WS 切断時に pending RPC を即座に reject する
+
+`ws.ts` は cmux ソケットが閉じると WS を code 1011 で閉じるが（`ws.ts:187-195`）、
+**in-flight だった RPC には何も返さない**。クライアント側も WS の `onclose` で
+`pendingRef` の Promise を片付けていないため、投げっぱなしの RPC は
+10 秒のタイムアウト（`useCmux.ts:23,71-74`）を待って初めて reject される。
+
+単一端末なら宙に浮く Promise は 1 本だけだが、購読が 8 本になると同時に 8 本が宙に浮く。
+本設計が増幅する欠陥なので、範囲内として直す:
+**`useWebSocket` の切断時に `pendingRef` の全 Promise を即座に reject する。**
+これによりフィードは 10 秒待たずに `error` を立て、再接続後の最初のポーリングで復帰する。
+
+参考として、push 側の `rpc-connection.ts:58-61` は既に close 時に
+`rejectAll(new Error('cmux socket closed'))` を行っている。同じ作法に揃える。
 
 ## 5. 画面設計
 
@@ -361,6 +380,7 @@ export interface TerminalFeed {
 | `components/Drawer.tsx` | ワークスペース行を展開可能にし、配下に端末行を出す。購読ドットを揃える |
 | `components/Header.tsx` | `ワークスペース名 · 端末名` の 2 段表示 |
 | `lib/surface-cache.ts` | `MAX_CACHED_SURFACES` の LRU 追い出しと `QuotaExceededError` の 1 回再試行（D7） |
+| `hooks/useWebSocket.ts` / `hooks/useCmux.ts` | 切断時に pending RPC を全件 reject（D10） |
 | `apps/server/src/ws.ts` | `FlatSurface` に `workspace_ref` / `workspace_title` / `workspace_selected` を追加（D5） |
 | `CLAUDE.md` | 誤った制約の記述を訂正（D9 / UR6） |
 
@@ -377,7 +397,7 @@ export interface TerminalFeed {
 | 背面端末の取得失敗 | そのフィードに `error` を立てタブのドットを警告色に。前面の表示には影響させない |
 | 背面端末が stale（別ウィンドウで閉じられた） | 1 回だけ `listSurfaces` で再取得し、`reconcile` で購読集合から外す |
 | 前面端末が stale | 現行どおり resync して生きた端末へ退避 |
-| WS 切断 | 全ポーリング停止。各フィードは直近値を保持したまま表示（オフライン鮮度表示） |
+| WS 切断 | pending RPC を即時 reject（D10）。全ポーリング停止。各フィードは直近値を保持したまま表示（オフライン鮮度表示）。再接続後の最初のポーリングで復帰 |
 | localStorage クォータ超過 | 最古のキャッシュを 1 件捨てて 1 回だけ再試行。なお失敗したら黙って諦める（現行と同じ） |
 
 ## 8. テスト方針
@@ -393,6 +413,7 @@ export interface TerminalFeed {
 **拡張**
 
 - `lib/__tests__/surface-cache.test.ts` — `MAX_CACHED_SURFACES` の追い出しと `QuotaExceededError` の再試行
+- `hooks/__tests__/useCmux.test.ts` — 切断時に in-flight の RPC が 10 秒を待たず reject されること（D10 の回帰ガード）
 - `hooks/__tests__/useCmux.test.ts` — ワークスペースを跨いだ前面化で `workspace.select` が**一度も飛ばない**こと（D1 の回帰ガード）。`createWorkspace` では従来どおり飛ぶこと（D6）。既存の「`surface_id` を使い `surface_ref` を使わない」ガード（`useCmux.test.ts:44-57`）を複数端末版に拡張
 - `components/__tests__/Drawer.test.tsx` — ワークスペース行の展開、端末行タップでの前面化
 - `apps/server/src/__tests__/ws.test.ts` — `flattenSurfaces` がワークスペース属性を付けること、フィルタ省略時に全ワークスペースを返すこと
@@ -438,3 +459,9 @@ cmux の UNIX ソケット（`~/.local/state/cmux/last-socket-path` が指す先
 P5 の検証は、自分で作った使い捨てサーフェスに対してのみ行い、検証後にクローズすること
 （他人の作業端末に文字列を送り込まないため）。ワークスペースの選択を一時的に動かす場合は、
 必ず元のワークスペースへ戻すこと。
+
+`system.tree` の実出力の入れ子は windows → workspaces → panes → surfaces の 4 階層で、
+workspace は `ref` / `id` / `title` / `selected` / `pinned` / `index` / `panes` を、
+surface は `ref` / `id` / `title` / `type` / `selected` / `selected_in_pane` / `focused` /
+`pane_ref` / `pane_id` / `index` / `index_in_pane` / `tty` / `url` を持つ。
+`result.active` に現在アクティブな `workspace_ref` / `surface_ref` / `pane_ref` などが入る。
