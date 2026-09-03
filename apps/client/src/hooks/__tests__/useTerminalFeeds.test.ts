@@ -181,6 +181,56 @@ describe('useTerminalFeeds — 実行規律', () => {
     Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
   })
 
+  it('E4: plan 変更の handoff を待つ間に hidden になってもタイマーを張らず、復帰後に再開する', async () => {
+    let resolveGrid: ((grid: RenderGrid | null) => void) | undefined
+    const readGrid = mockReadGrid(() => Promise.resolve(gridOf('next'))).mockImplementationOnce(
+      () =>
+        new Promise<RenderGrid | null>((resolve) => {
+          resolveGrid = resolve
+        }),
+    )
+    const h = harness({
+      subscribed: ['surface:1'],
+      visible: ['surface:1'],
+      surfaces: [surfaceOf('surface:1'), surfaceOf('surface:2', 'browser', 1)],
+      pinned: false,
+      readGrid,
+    })
+    const { rerender } = renderHook((props: Parameters<typeof useTerminalFeeds>[0]) => useTerminalFeeds(props), {
+      initialProps: h.props,
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    rerender({
+      ...h.props,
+      view: { ...h.props.view, foreground: 'surface:2' },
+      visibleRefs: ['surface:2'],
+    })
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'))
+      resolveGrid?.(gridOf('discarded'))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    const timersWhileHidden = vi.getTimerCount()
+    h.readGrid.mockClear()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(BACKGROUND_POLL_INTERVAL * 2)
+    })
+    const requestsWhileHidden = h.readGrid.mock.calls.map((call) => call[0])
+
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'))
+      await vi.advanceTimersByTimeAsync(BACKGROUND_POLL_INTERVAL)
+    })
+
+    expect(timersWhileHidden).toBe(0)
+    expect(requestsWhileHidden).toEqual([])
+    expect(h.readGrid.mock.calls.map((call) => call[0])).toEqual(['surface:1'])
+  })
+
   it('E4: hidden になったら全タイマーを clear し、復帰で前面即時・背面 interval+stagger で再開する', async () => {
     const h = harness({ subscribed: ['surface:1', 'surface:2'], visible: ['surface:1'], pinned: false })
     renderHook(() => useTerminalFeeds(h.props))

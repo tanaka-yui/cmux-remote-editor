@@ -169,7 +169,9 @@ export function useTerminalFeeds(props: UseTerminalFeedsProps): void {
         const handoff = completionHandoffRef.current.get(ref)
         if (handoff) {
           completionHandoffRef.current.delete(ref)
-          handoff()
+          // handoff 待機中に hidden になった場合は予約を捨てる。
+          // 復帰時は onVisibility が現在の plan 全件を改めて予約する（E4）。
+          if (!isDocumentHidden()) handoff()
         } else {
           // E1: 完了してから次回を予約する。開始時刻を起点に遅れを取り戻さない。
           // hidden 中は張らない（復帰時に resume が全件張り直す。E4）。
