@@ -1706,6 +1706,9 @@ EOF
 
 ### 移行の作法 — 各タスクを常にグリーンに保つ
 
+> **このタスクで削除する / 残すものの確定リストは、下の「実装手順 Step 4」の表が正である。**
+> 以下は方針の説明であり、個々の関数名の扱いは Step 4 に従うこと。
+
 Global Constraints は「各タスクの最後で `pnpm check` と `pnpm test` の両方を通す」と定めている。
 `useCmux` の公開 API を一度に作り替えると Task 11 まで型エラーが残り、この契約を破る。
 そこで **Task 6 では旧 API を削除せず、新しい `SwitcherState` の上に載る shim として残す。**
@@ -1725,12 +1728,12 @@ Global Constraints は「各タスクの最後で `pnpm check` と `pnpm test` �
 ```
 
 **`selectWorkspace` だけは shim にしない** — 「何もしない関数」を残すと、Task 6〜10 の間だけ
-ワークスペース切替が無言で壊れた状態になる。代わりに **Task 6 の中で 3 つの呼び出し元を
-同時に直す**（`App.tsx:380-382` のドロワー行タップ、`createWorkspace` の追従、
-`closeWorkspace` のクリア）。いずれも数行の削除で済み、Task 10 の Drawer 改修とは独立している。
+ワークスペース切替が無言で壊れた状態になる。代わりに **Task 6 の中で呼び出し元を同時に直す**
+（確定リストは Step 4 の表）。
 
-`panes` / `currentPane` / `listPanes` / `navigate*` は本設計では使われないが、**Task 6 では
-触らない**。Task 11 で `App.tsx` から参照が消えたのを確認してからまとめて削除する。
+`panes` / `currentPane` / `listPanes` / `navigatePane` / `navigateSurface` は本設計では使われないが、
+**Task 6 では触らない**。Task 11 で `App.tsx` から参照が消えたのを確認してからまとめて削除する。
+**`navigateWorkspace` だけは例外**で、`selectWorkspace` に依存するため Task 6 で削除する。
 
 この方針により **Task 6 / 7 / 8 / 9 / 10 / 11 のすべてで `pnpm check` と `pnpm test` が通る。**
 
@@ -2181,7 +2184,9 @@ EOF
 
 **Files:**
 - Modify: `apps/client/src/hooks/useCmux.ts`
+- Modify: `apps/client/src/App.tsx`（**初期取得 effect から surface/workspace の直接取得を外す**。下記）
 - Test: `apps/client/src/hooks/__tests__/useCmux.test.ts`
+- Test: `apps/client/src/__tests__/App.test.tsx`
 
 **Interfaces:**
 - Consumes: Task 6 の `listSurfaces` / `reconcileWith`
@@ -2553,6 +2558,19 @@ describe('D2.1 topology 再取得ループ', () => {
     expect(result.current.view.foreground).toBe('surface:1')
   })
 
+  it('マウントして接続したとき surface.list / workspace.list はそれぞれ 1 本だけ', async () => {
+    hoisted.responses['surface.list'] = { surfaces: [] }
+    hoisted.responses['workspace.list'] = { workspaces: [] }
+    hoisted.responses['notification.list'] = { notifications: [] }
+    render(<App />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    const count = (m: string) => sentRequests().filter((r) => r.method === m).length
+    expect(count('surface.list')).toBe(1)
+    expect(count('workspace.list')).toBe(1)
+  })
+
   it('片方の list が先に失敗しても、もう片方が settle するまで follow-up を始めない', async () => {
     const { result } = renderHook(() => useCmux())
     hoisted.errors['surface.list'] = { code: 'internal_error', message: 'boom' }
@@ -2575,6 +2593,24 @@ describe('D2.1 topology 再取得ループ', () => {
       await vi.advanceTimersByTimeAsync(0)
     })
     expect(count('workspace.list')).toBe(2) // ここで初めて follow-up が走る
+  })
+
+  it('hidden 中に溜めた waiter は unmount で reject される（永久未 settle にしない）', async () => {
+    const { result, unmount } = renderHook(() => useCmux())
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
+    let settled: string | undefined
+    act(() => {
+      void result.current.requestTopologyRefresh().then(
+        () => { settled = 'resolved' },
+        () => { settled = 'rejected' },
+      )
+    })
+    expect(settled).toBeUndefined()
+    await act(async () => {
+      unmount()
+    })
+    expect(settled).toBe('rejected')
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
   })
 
   it('hidden 中の直接 requestTopologyRefresh は RPC を 0 件に保つ', async () => {
@@ -2770,6 +2806,17 @@ export interface TopologySnapshot {
     return promise
   }, [runRefresh])
 
+  // アンマウント時に、hidden 中に溜めた waiter を必ず reject する。
+  // hidden 中の要求は RPC を開始しないので Task 2 の pending RPC cleanup の対象外であり、
+  // これが無いと visible に戻る前に unmount した Promise が永久に未 settle になる。
+  useEffect(() => {
+    return () => {
+      const waiters = waitersRef.current
+      waitersRef.current = []
+      for (const w of waiters) w.reject(new Error('unmounted'))
+    }
+  }, [])
+
   // T5: 低頻度ポーリング。E1 の自己再帰スケジュール、E4 の hidden 停止。
   // タイマーは常に 1 本。復帰イベントが 3 つ同時に来ても増殖させない。
   useEffect(() => {
@@ -2813,6 +2860,26 @@ export interface TopologySnapshot {
   }, [status, requestTopologyRefresh])
 ```
 
+**初期取得を 1 経路にする（重要）**
+
+現行 `App.tsx:112-133` の初期 effect は `listWorkspaces()` → `listNotifications()` を呼び、
+`App.tsx:148-162` の effect が `listSurfaces(currentWorkspace)` を呼ぶ。**これらを残したまま
+T1 を足すと、起動時に「App の直接取得」と「T1 の共通 refresh」が並走する。**
+直接取得は `inFlightRef` にも hidden 破棄にも generation にも参加しないので、
+E2 を破るうえ、**古い直接応答が新しい T1 snapshot の後から `surfaces` を上書きできる**
+（D2.1 が消そうとした ghost/missing tab を起動時に再導入する）。
+
+したがって **Task 7 で `App.tsx` の初期取得を次の形に変える。**
+
+- 初期 effect は **`listNotifications()` だけ**にする（通知バッジの取得は topology とは別系統）
+- **surface / workspace の初期取得は T1（接続直後の `requestTopologyRefresh`）だけが行う**
+- `App.tsx:148-162` の「`currentWorkspace` が変わったら取り直す」effect は**削除する**
+  （UR1 で一覧は全ワークスペースになり、`currentWorkspace` は導出値なので取り直す理由が無い）
+- 起動時のリトライは T1 の失敗時に T5 が引き継ぐ（`INIT_RETRY_INTERVAL` の独自リトライは不要）
+
+受入条件: **「App をマウントして接続したとき `surface.list` と `workspace.list` はそれぞれ 1 本だけ」**、
+および **「古い直接取得が後着して一覧を上書きしない」**（そもそも直接取得が存在しないこと）。
+
 **T3 の配線**: `createWorkspace` / `createSurface` / `closeSurface` / `closeWorkspace` は
 `listSurfaces()` を直接呼ばず、`await requestTopologyRefresh()` を **1 回**呼び、**返ってきた
 `snapshot.surfaces` から**目的の ref を引く（React state の `surfaces` を読まない）。
@@ -2848,7 +2915,7 @@ Expected: エラーなし。
 - [ ] **Step 6: コミット**
 
 ```bash
-git add apps/client/src/hooks/useCmux.ts apps/client/src/hooks/__tests__/useCmux.test.ts
+git add apps/client/src/hooks/useCmux.ts apps/client/src/App.tsx apps/client/src/hooks/__tests__/useCmux.test.ts apps/client/src/__tests__/App.test.tsx
 git commit -m "$(cat <<'EOF'
 feat(client): topology 再取得ループを入れる (D2.1)
 
@@ -3077,6 +3144,31 @@ describe('useTerminalFeeds — 実行規律', () => {
     const refs = h.readGrid.mock.calls.map((c) => c[0])
     expect(refs).not.toContain('surface:3')
     expect(refs).not.toContain('surface:9')
+  })
+
+  it('E4: hidden のまま mount してもタイマーを 1 本も張らない', async () => {
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
+    const h = harness({ subscribed: ['surface:1', 'surface:2'], visible: ['surface:1'] })
+    renderHook(() => useTerminalFeeds(h.props))
+    expect(vi.getTimerCount()).toBe(0)
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
+  })
+
+  it('E4: hidden 中に planKey が変わって effect が作り直されてもタイマーを張らない', async () => {
+    const h = harness({ subscribed: ['surface:1'], visible: ['surface:1'] })
+    const { rerender } = renderHook((props: Parameters<typeof useTerminalFeeds>[0]) => useTerminalFeeds(props), {
+      initialProps: h.props,
+    })
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    // 購読集合を変えて effect を作り直す
+    const view2 = { ...h.props.view, subscriptions: [{ ref: 'surface:2', lastForegroundAt: 1, treeIndex: 1 }] }
+    rerender({ ...h.props, view: view2, visibleRefs: ['surface:2'] })
+    expect(vi.getTimerCount()).toBe(0)
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
   })
 
   it('E4: hidden になったら全タイマーを clear し、復帰で前面即時・背面 interval+stagger で再開する', async () => {
@@ -3676,7 +3768,9 @@ export interface UseTerminalFeedsProps {
 }
 
 export function useTerminalFeeds(props: UseTerminalFeedsProps): void {
-  const { status, view, surfaces, feeds, visibleRefs, pinned, historyLines } = props
+  // 分割代入するのは effect の依存に使う値だけにする。feeds / pinned / historyLines は
+  // await 後に latest.current から読むので、ここでローカルに取ると noUnusedLocals で止まる。
+  const { status, view, surfaces, visibleRefs } = props
 
   // 毎ポーリング変わる値は ref 経由で読む。effect の依存に入れるとタイマーが張り直される。
   const latest = useRef(props)
@@ -3787,10 +3881,15 @@ export function useTerminalFeeds(props: UseTerminalFeedsProps): void {
     }
 
     // E3: 背面の初回発火を index * BACKGROUND_STAGGER だけずらす（burst の平準化）。
-    let backgroundIndex = 0
-    for (const entry of plan) {
-      const delay = visibleRefs.includes(entry.ref) ? 0 : backgroundIndex++ * BACKGROUND_STAGGER
-      arm(entry.ref, entry.intervalMs, delay)
+    // hidden のまま mount した場合や、hidden 中に status / planKey が変わって effect が
+    // 作り直された場合は **1 本も張らない**（E4 の「hidden 中はタイマーを張らない」）。
+    // 復帰は下の onVisibility が担当する。
+    if (document.visibilityState !== 'hidden') {
+      let backgroundIndex = 0
+      for (const entry of plan) {
+        const delay = visibleRefs.includes(entry.ref) ? 0 : backgroundIndex++ * BACKGROUND_STAGGER
+        arm(entry.ref, entry.intervalMs, delay)
+      }
     }
 
     // E4: hidden になったら全タイマーを clear し、復帰したら全件を張り直す。
@@ -4187,7 +4286,18 @@ Expected: FAIL。
 
 - `Drawer`: ワークスペース行を `<button aria-expanded>` にし、`expanded: Set<string>` をローカル state で持つ（**永続化しない**）。初期値は `foreground` を含むワークスペース 1 件。配下に `surfaces.filter(s => s.workspace_ref === ws.ref)` を並べ、行頭に Task 9 と同じドットを出す。既存の閉じる `×` + AlertDialog（`Drawer.tsx:293-352`）はそのまま残す。
 - `Header`: `44px` の中で 1 行に 2 要素を `·` で区切る。ワークスペース名は `--color-text-muted`、端末名は `--color-text`。横幅が足りないときはワークスペース名側から `text-overflow: ellipsis` で省略する（**2 行にしない**）。`freshness` はそのまま `ConnectionIndicator` へ渡す。
-- `ConnectionIndicator`: `lastUpdated` を捨てて `freshness: string | null` を受け取り、**非 null ならそのまま薄く表示する**（`--color-text-subtle`）。時刻の整形は `describeFeed`（Task 4）が済ませているので、このコンポーネントは `formatClock` を持たない。既存の「connected→切断の 2 秒猶予」ロジックは変えない。
+- `ConnectionIndicator`: `lastUpdated` を捨てて `freshness: string | null` を受け取り、
+  **非 null ならそのまま薄く表示する**（`--color-text-subtle`）。時刻の整形は `describeFeed`（Task 4）が
+  済ませているので、このコンポーネントは `formatClock` を持たない。
+
+  **ただし `freshness` の表示も `shownStatus` の 2 秒猶予に合わせる。** F8 は切断の瞬間に全 feed を
+  `error` にするので、素直に即時表示すると **2 秒間だけ「緑の Connected」の横に「接続なし · 最終 …」が
+  並ぶ**。猶予中は**直前の freshness を出し続け**、`shownStatus` が `disconnected` へ切り替わるのと
+  同時に新しい freshness へ差し替える。
+
+  受入条件（`ConnectionIndicator.test.tsx`）: **「切断直後 1999ms は `Connected` と旧 freshness」**、
+  **「2000ms 後に `Disconnected` と『接続なし』が同時に出る」**、
+  **「`freshness` が `null` なら何も出さない」**。
 
 - [ ] **Step 4: テストが通ることを確認する**
 
@@ -4464,16 +4574,66 @@ Expected: FAIL。
 
 - [ ] **Step 3: 実装する**
 
-- **Task 6 で入れた shim を削除する**: `currentSurface` / `focusSurface`。あわせて本設計で使われなくなった `panes` / `currentPane` / `listPanes` / `navigateWorkspace` / `navigatePane` / `navigateSurface` も削除する（`App.tsx` から参照が消えたことを確認してから）。
+- **Task 6 で入れた shim を削除する**: `currentSurface` / `focusSurface`。あわせて本設計で使われなくなった `panes` / `currentPane` / `listPanes` / `navigatePane` / `navigateSurface` も削除する（`App.tsx` から参照が消えたことを確認してから）。**`navigateWorkspace` は Task 6 で削除済みなのでここには無い。**
 - `termGrid` / `termHistory` / `lastUpdated` / `pollRef` / `staleResyncRef` / `lastScrollbackRef` を削除し、`useTerminalFeeds` に委譲する。
 - 前面フィードだけを `Terminal` に渡す: `const feed = feeds.get(view.foreground ?? '')`。
 - 表示は `describeFeed(feed)`（Task 4）の返り値で分岐する。`kind: 'grid'` なら `Terminal` に `feed.grid` / `feed.history` を渡し、`kind: 'message'` なら `Terminal` を描かずメッセージを出す。`freshness` は `ConnectionIndicator` の隣に薄く出す。
 - browser 分岐（`App.tsx:196-199, 430-454`）は**そのまま維持する**。
+- **`pinned` を ref から state へ移す。** 現行 `App.tsx:98-101` の `pinnedRef` は
+  `onPinnedChange` が ref を書き換えるだけで**再 render を起こさない**。そのまま
+  `pinned={pinnedRef.current}` を渡すと、スクロールで unpin しても `useTerminalFeeds` の
+  `latest.current.pinned` が更新されず、`read_text` と localStorage 更新が止まらない。
+
+  ```ts
+  const [pinned, setPinned] = useState(true)
+  // Terminal からのピン留め通知。state にするので再 render が起き、
+  // useTerminalFeeds の latest.current にも伝わる。
+  const onPinnedChange = useCallback((next: boolean) => setPinned(next), [])
+  // サーフェス切替でピン留めへ戻す。Terminal は resetKey で内部 ref を true にするだけで
+  // 親の callback を呼ばないため、親側で明示的に戻す必要がある。
+  useEffect(() => setPinned(true), [view.foreground])
+  ```
+
+  受入条件（App の結合テスト）: **「unpin すると次の周期から `read_text` が止まる」**、
+  **「unpin 中に返った `read_text` の遅延応答を捨てる」**、
+  **「別サーフェスへ切り替えると pin が `true` に戻る」**。
+  Task 8 の静的な `pinned: false` 単体テストではこの配線不良を検出できない。
 - **タブの `+`**: `createSurface(foregroundSurface.workspace_id)` を呼ぶ（`workspace_ref` ではない）。戻り値の `misplaced` が `true` なら「別のワークスペースに作成されました」を出す。**自動 rollback（`surface.close`）はしない** — ユーザーが意図して作った端末を黙って消す方が損失が大きく、誤配置は Mac 側の `surface.move` で直せる。
 - **タブの `×`**: `closeSurface(ref)` は現行のまま。意味を変えない。
 - **ディープリンクは「初回 bootstrap」と「マウント後の通知」を分ける。**
   - **初回 bootstrap**: URL の `?workspace=<UUID>` → `sessionStorage`（`cmux:foreground`）の順で
     **1 個の `preferredRef` に解決**してから `initializeFrom(surfaces, preferredRef)` を呼ぶ。
+  - **URL の UUID は「解決できるまで pending として保持する」。** `workspace.list` と
+    `surface.list` は別 RPC なので、**workspace だけ先に state へ来る時系列が普通に起こる**。
+    現行 `App.tsx:341-358` は `workspaces.length > 0` で走り、解決の成否に関係なく
+    直後に query を消すので、そのまま置き換えると一覧の到着順だけで Push 遷移が消える。
+
+    ```ts
+    // URL から読んだ UUID を state に保持する。query の削除は「消費した後」だけ。
+    const [pendingWorkspaceId, setPendingWorkspaceId] = useState<string | null>(() => {
+      const wid = new URLSearchParams(window.location.search).get('workspace')
+      if (wid) stripWorkspaceQuery()   // URL の見た目はすぐ整える（値は state が持つ）
+      return wid
+    })
+
+    // bootstrap は「両方の一覧が揃ってから」1 回だけ走らせる。
+    useEffect(() => {
+      if (bootstrappedRef.current) return
+      if (workspaces.length === 0 || surfaces.length === 0) return
+      bootstrappedRef.current = true
+      const preferredRef = resolvePreferred(pendingWorkspaceId, workspaces, surfaces)
+      setPendingWorkspaceId(null)
+      initializeFrom(surfaces, preferredRef)
+    }, [workspaces, surfaces, pendingWorkspaceId, initializeFrom])
+    ```
+
+    `resolvePreferred` は **UUID → `Workspace.id` → 配下の「購読中があればそれ、無ければ先頭」**、
+    解決できなければ **`sessionStorage`（`cmux:foreground`）が生存していればそれ**、
+    どちらも無ければ `null`（`initialize` が `active` → 先頭 の順で決める）。
+    **対象ワークスペースが存在しないと確定した場合も同じ fallback を使う。**
+
+    受入条件: **`workspace.list` を先に resolve し `surface.list` を遅らせても、
+    最終的に通知先のサーフェスが前面になること**。
   - **マウント後の SW `postMessage`**: 対象 `Surface` を決めて **`selectSurface(surface)`** を呼ぶ。
     **`initializeFrom` を使ってはならない** — `initialize` は購読集合を「選んだ 1 件だけ」に
     作り直すので、それまでのバックグラウンド購読が全部落ちる。

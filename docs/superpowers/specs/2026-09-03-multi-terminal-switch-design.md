@@ -877,7 +877,7 @@ export interface TerminalFeed {
 
 | ファイル | 変更 |
 |---|---|
-| `hooks/useCmux.ts` | `selectWorkspace` を公開 API から削除し `currentWorkspace` を `foregroundWorkspaceRef` からの導出値にする（D1/D2）。`listSurfaces()` を全ワークスペース取得に。`createSurface` は `workspace_id` 指定 + レスポンスから新 ref を取得（P7/P9）し、返り値の `workspace_id` を検証（P8）。**`createWorkspace` を D1.1 の 3 手順（create → 共通 refresh を 1 回 → その適用を await して `selectSurface`）に置き換える**。**D2.1 の topology 再取得ループ**（T1〜T5、queued refresh 1 件、dirty は取得開始前に消費、`generation` を返す `requestTopologyRefresh()`）を持つ。**`SwitcherState` を `useReducer` で保持し、`selectSurface` / `initializeFrom` / `reconcileWith` だけを公開する**（`focus` は公開しない） |
+| `hooks/useCmux.ts` | `selectWorkspace` を公開 API から削除し `currentWorkspace` を `foregroundWorkspaceRef` からの導出値にする（D1/D2）。`listSurfaces()` を全ワークスペース取得に。`createSurface` は `workspace_id` 指定 + レスポンスから新 ref を取得（P7/P9）し、返り値の `workspace_id` を検証（P8）。**`createWorkspace` を D1.1 の 3 手順（create → 共通 refresh を 1 回 → その適用を await して `selectSurface`）に置き換える**。**D2.1 の topology 再取得ループ**（T1〜T5、queued refresh 1 件、dirty は取得開始前に消費、適用した snapshot（`{ generation, surfaces, workspaces }`）を返す `requestTopologyRefresh()`、waiter は要求 seq で照合）を持つ。**`SwitcherState` を `useReducer` で保持し、`selectSurface` / `initializeFrom` / `reconcileWith` だけを公開する**（`focus` は公開しない） |
 | `App.tsx` | 単数スカラー（`termGrid`/`termHistory`/`lastUpdated`）を `useTerminalFeeds` に委譲。前面フィードだけを `Terminal` に渡す。browser 分岐は現行維持（D5）。D3.1 の 5 表示ケースを `(status, source)` から選ぶ |
 | `components/TabBar.tsx` | 全サーフェスを描画。WS 色ドット、購読ドット、WS 境界の区切り線。`×` の意味は据え置き |
 | `components/Drawer.tsx` | ワークスペース行を展開可能にし、配下にサーフェス行を出す。購読ドットを揃える |
