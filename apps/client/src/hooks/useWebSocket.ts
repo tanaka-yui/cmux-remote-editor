@@ -48,6 +48,8 @@ export function useWebSocket({ url, onMessage, onClose, maxRetries = DEFAULT_MAX
     }
 
     ws.onclose = () => {
+      if (wsRef.current !== ws) return
+
       setStatus('disconnected')
       wsRef.current = null
       onCloseRef.current?.()
