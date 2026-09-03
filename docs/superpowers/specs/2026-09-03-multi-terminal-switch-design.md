@@ -31,7 +31,7 @@ Header:  ☰ / 現在の端末名 (ws-a/vim) / 接続ドット / ⚙
 |---|---|
 | UR1 | タブ行はワークスペースを跨いだ**全サーフェス**を 1 行に集約する（購読していない端末もタブに並ぶ） |
 | UR2 | **どの端末がいまライブ購読されているかがタブ上で一目で分かること。購読中/非購読の視覚的区別は必須** |
-| UR3 | 切替は即時（再取得を待たずに最新が出る） |
+| UR3 | 切替は即時。受入条件は §4 D3.1 の 3 ケースで定義する |
 | UR4 | `workspace.select` による cmux 追従は廃止する。設定トグルも作らない |
 | UR5 | 分割ビューは範囲外。ただし基盤は後から分割を足せる形にする |
 | UR6 | CLAUDE.md と `useCmux.ts:101-103` の誤った記述を、**実装と同じコミット群の中で**修正する |
@@ -205,9 +205,42 @@ export function focus(state: ViewState, ref: string, now: number, cap: number): 
 export function reconcile(state: ViewState, surfaces: readonly SurfaceLike[], now: number): ViewState
 // 初期化。保存された前面が生きていればそれ、無ければ cmux の selected、無ければ先頭。
 export function initialize(surfaces: readonly SurfaceLike[], preferredRef: string | null, now: number): ViewState
-// ポーリング計画。前面 1Hz、その他の購読 3s、非購読は含めない。browser は含めない。
-export function pollPlan(state: ViewState, surfaces: readonly SurfaceLike[]): { ref: string; intervalMs: number }[]
+// ポーリング計画。表示中(visibleRefs)は 1Hz、その他の購読は 3s、非購読と browser は含めない。
+// visibleRefs を集合で受けるのは、分割ビュー(UR5)で「表示中」が複数になっても
+// この API の形を変えずに済ませるため。今回は常に foreground 1 件だけを渡す。
+export function pollPlan(
+  state: ViewState,
+  surfaces: readonly SurfaceLike[],
+  visibleRefs: readonly string[],
+): { ref: string; intervalMs: number }[]
 ```
+
+### D3.1 切替時の表示契約（UR3 の受入条件）
+
+「再取得を待たずに最新が出る」は購読中の端末にしか成立しない。非購読の端末まで含めて
+「最新」を必須にすると購読を止める設計自体が成り立たないので、UR3 を**観測可能な 3 ケース**に分解する。
+これが受入条件であり、そのままテスト名になる。
+
+| ケース | 表示 | 鮮度の提示 |
+|---|---|---|
+| 購読中（前面/背面いずれでも） | メモリ上の直近フレームを**同期的に**描画。RPC を待たない | 出さない（3 秒以内の鮮度が保証される） |
+| 非購読・このセッションで一度でも見た | メモリに残した最終フレームを同期的に描画し、1 往復後に更新 | 「更新: HH:MM:SS」を薄く出す |
+| 非購読・メモリに無い（localStorage キャッシュあり） | キャッシュを描画し、1 往復後に更新 | 「オフライン時点の内容 · 最終 HH:MM」を出す |
+| 非購読・どこにも無い（初見） | **空白にしない。**「読み込み中」を出す | — |
+
+**空白のまま前の端末の画面を残してはならない**（別の端末の内容を今の端末だと誤認させるため）。
+切替時にフィードが無ければ、まず旧端末の描画を捨ててから読み込み表示にする。
+
+この 3 + 1 ケースは `useTerminalFeeds` と `Terminal` の両方でテストする。
+
+### D3.2 メモリ上のフィードは購読より長く保持する
+
+購読集合（上限 8）は**ポーリング対象**を決めるだけで、**フィードの保持期間ではない**。
+`Map<surfaceRef, TerminalFeed>` は「このセッションで一度でも前面にした端末」を保持し、
+購読から外れても最終フレームを捨てない。これにより D3.1 の 2 行目が成立する。
+
+保持上限は `MAX_RETAINED_FEEDS = 24`（LRU）。`render_grid` 1 個は実測で数十 KB なので、
+24 個でも数 MB のメモリに収まる。localStorage には書かないのでクォータには影響しない。
 
 ### D3. 前面の決定順と退避順
 
@@ -215,9 +248,18 @@ export function pollPlan(state: ViewState, surfaces: readonly SurfaceLike[]): { 
 
 1. Push ディープリンク（`?workspace=` / SW メッセージ）が指すワークスペースのサーフェス
 2. 直前セッションの前面（`sessionStorage` に保持、後述）が生存していればそれ
-3. cmux 側で `selected` なサーフェス（既存 `resolveSelectedRef` と同じ優先順）
+3. **cmux が実際にアクティブにしているサーフェス**
 4. 一覧の先頭
 5. 一覧が空なら `foreground = null`（空画面。「端末がありません」を出す）
+
+3 の判定に `FlatSurface.selected` を使ってはならない。`selected` は**ペイン内の選択**を表すため、
+全ワークスペースを平坦化すると `selected === true` が複数存在する（`ws.test.ts:76,80` が
+まさにその形のフィクスチャを持ち、`useCmux.ts:187-189` のコメントも「マルチペインで複数 true に
+なり得る」と明記している）。全 WS を混ぜた一覧に対して「最初の `selected`」を採ると、
+cmux が実際に見ているサーフェスとは無関係なものを選びうる。
+
+`system.tree` の `result.active.surface_ref` が唯一の正解なので、**サーバーがこれを
+`surface.list` の応答に載せる**（D7）。クライアントはその 1 件だけを「アクティブ」として扱う。
 
 **前面が消えたときの退避順（`reconcile`）**
 
@@ -279,6 +321,8 @@ BACKGROUND_STAGGER = BACKGROUND_POLL_INTERVAL / MAX_LIVE_SUBSCRIPTIONS  // 375ms
 
 **上限超過時の挙動**: 前面化されたサーフェスを購読集合へ入れ、集合が 8 を超えたら
 `lastForegroundAt` が最古のものの購読を解除する。ただし前面自身は追い出さない（I1）。
+**`lastForegroundAt` が同値のときは `system.tree` 順で後ろにあるものを先に外す**
+（初期購読集合をまとめて作った直後は全件が同時刻になりうるため、tie-break を決定的にする）。
 解除されるのは購読だけで、cmux 側の端末は閉じないし、タブ行からも消えない（ドットが消えるだけ）。
 
 **UDS 接続の割り当て**: 現行どおり **ブラウザ WS 1 本につき cmux UDS 1 本**とし、
@@ -303,6 +347,11 @@ BACKGROUND_STAGGER = BACKGROUND_POLL_INTERVAL / MAX_LIVE_SUBSCRIPTIONS  // 375ms
 `FlatSurface`（`ws.ts:36-45`）には `workspace_ref` が無い。UR1 のクロスワークスペース表示には必須なので、
 `workspace_ref` / `workspace_title` / `workspace_id` を追加する。
 `workspace_id` は P7 の対象指定作成に必要である。
+
+あわせて **`active: boolean`** を追加する。`system.tree` の `result.active.surface_ref` と
+一致する 1 件だけが `true` になる（D3 の初期前面決定に使う）。既存の `selected` は
+ペイン内選択の意味のまま残し、意味の違う 2 つを混同しないよう `FlatSurface` の型に
+コメントで書き分ける。全 WS 平坦化時に `active` が 2 件以上になったらサーバー側のバグである。
 `flattenSurfaces` は `workspaceRef` 省略時に全ワークスペースを返す実装が既にあるため（`ws.ts:48-69`）、
 変更は各行への属性付与だけで済む。透過中継の仕組みには手を入れない。
 
@@ -329,16 +378,29 @@ BACKGROUND_STAGGER = BACKGROUND_POLL_INTERVAL / MAX_LIVE_SUBSCRIPTIONS  // 375ms
 | C2 | **内容が変化したときだけ書く**。`grid` も `scrollback` と同様に前回値と比較する（現在 `scrollback` だけが `lastScrollbackRef` で比較されている） |
 | C3 | `QuotaExceededError` を捕捉したら、**`cmux-surface-cache:` 接頭辞のキーを `updatedAt` の古い順に削除しながら、成功するか候補が尽きるまで再試行する**（上限付きループ）。1 件だけ消して 1 回再試行では足りない |
 | C4 | `MAX_CACHED_SURFACES = 12` は**二次ガード**として残す（C3 が働く前に件数が無限に増えないようにする） |
+| C5 | **直列化後の 1 entry のサイズに上限を設ける**（`MAX_CACHED_ENTRY_BYTES`）。現行の `MAX_CACHED_CHARS` は `text` と `scrollback` に**別々に**適用されるうえ `grid` と JSON のオーバーヘッドが載るため、1 件で 500KB を超えうる。書き込み前に `JSON.stringify` の長さを見て、超えるなら `scrollback` を先に削って収める |
+| C6 | **メモリ上のフィード（D3.2）と localStorage の更新契機を分ける**。メモリは毎ポーリング更新、localStorage は「前面かつ内容変化時」のみ。背面の grid を 3 秒ごとに同期書き込みしない |
 
 C1 により毎秒の同期書き込みは 8 回から 1 回に戻る。
 
-### D9. 分割ビューは範囲外だが、基盤は分割を前提に切る（UR5）
+### D9. 分割ビューは範囲外。今回用意するのは「フィードの分離」までである（UR5）
 
 端末ごとの状態は `Map<surfaceRef, TerminalFeed>` に持ち、`Terminal` へは
 「1 個のフィード」を props で渡す。`Terminal` 自体はどの端末を描いているかを知らない。
-分割ビューを足すときは、`Terminal` を n 個並べて別々のフィードを渡し、
-`ViewState.foreground` を集合に広げて `pollPlan` の間隔判定を変えるだけで済む
-（`pollPlan` の返り値が既に per-surface の配列であるため）。
+`pollPlan` は「表示中」を集合（`visibleRefs`）で受け、単数前提を API に残さない。
+
+ただし **これは分割ビューの必要条件の一部にすぎず、「集合に広げるだけで足りる」わけではない**。
+分割ビューを実際に足すときは、少なくとも次の追加設計が要る。
+
+- 「表示中の集合」と「キーボード入力先」の分離（今は同一視している）
+- ピン留め/スクロール位置をペインごとに持つこと（現在は `resetKey` で毎回リセットする前提）
+- マウス/タップのルーティングを表示中ペインごとに分けること
+- 同時表示を購読上限にどう数えるか
+- browser サーフェスを分割ペインに置けるか
+- サーフェスごとの `ErrorBoundary` とレイアウト状態
+
+UR5 の受入条件は「フィードと描画が 1 端末単位に分離されており、`pollPlan` が単数前提でないこと」
+までとし、分割ビューそのものは別途の設計を要する、と明記する。
 
 ### D10. WS 切断時に pending RPC を即座に reject する
 
@@ -348,9 +410,14 @@ C1 により毎秒の同期書き込みは 8 回から 1 回に戻る。
 10 秒のタイムアウト（`useCmux.ts:23,71-74`）を待って初めて reject される。
 
 単一端末なら宙に浮く Promise は 1 本だが、購読が 8 本になると同時に 8 本が宙に浮く。
-本設計が増幅する欠陥なので範囲内で直す:
-**切断時に `pendingRef` の全 Promise を即座に reject する。**
-参考として push 側の `rpc-connection.ts:58-61` は既に同じことをしている。
+本設計が増幅する欠陥なので範囲内で直す。契約は次の 3 点である。
+
+1. **切断時に `pendingRef` の全 Promise を即座に reject する**。各 Promise の reject は
+   ちょうど 1 回（タイムアウトタイマーは reject 前に必ず `clearTimeout` する）
+2. **アンマウント時にも同じ後始末を行う**。ポーリングの `setTimeout` も全て clear する
+3. reject 後に遅れて到着した応答は破棄する（`pendingRef` に無い id は現行どおり無視される）
+
+参考として push 側の `rpc-connection.ts:58-61` は既に 1 と同じことをしている。
 
 ### D11. CLAUDE.md とコードコメントの訂正（UR6）
 
@@ -408,6 +475,11 @@ C1 により毎秒の同期書き込みは 8 回から 1 回に戻る。
 | 取得に失敗 | ドットを `--color-warning` に。タイトルは `--color-text-subtle` |
 
 新色は追加しない。ワークスペースの変わり目には既存の `--color-tab-group-border` で区切り線を引く。
+
+**前面が変わるすべての経路で、アクティブタブを `scrollIntoView` する。**
+タブタップ、ドロワーからのジャンプ、初期復元、タブを閉じた後の退避、新規作成、通知ジャンプの
+6 経路すべてが対象で、経路ごとに実装するのではなく「前面 ref の変化」を 1 箇所で拾って行う。
+**購読状態は色だけで伝えない。** タブに `aria-label`（例:「zsh、ライブ購読中」／「zsh、未購読」）を付ける。
 タブの `×` は**現行どおり端末を閉じる**。意味は変えない。
 末尾の `+` は新規端末の作成で、**前面サーフェスのワークスペースに `workspace_id` 指定で作る**（P7）。
 
@@ -518,11 +590,15 @@ export interface TerminalFeed {
   **同一サーフェスの in-flight が 1 件を超えないこと**（E2）。`vi.useFakeTimers()` を使う
 - `components/__tests__/TabBar.test.tsx` — 現在テストが無い。全サーフェスの描画、
   購読中/非購読のドット出し分け（UR2 の回帰ガード）、browser にドットを出さないこと、
-  WS 境界の区切り、切替、`×`
+  WS 境界の区切り、切替、`×`、**前面変化でアクティブタブが `scrollIntoView` されること**、
+  **`aria-label` が購読状態を含むこと**
+- D3.1 の 4 ケース（購読中 / 非購読・メモリあり / 非購読・キャッシュのみ / 初見）を
+  `useTerminalFeeds` と `Terminal` の両方でテストする。とくに**初見で前の端末の画面が残らないこと**
 
 **拡張**
 
-- `lib/__tests__/surface-cache.test.ts` — C2（変化時のみ書く）、C3（Quota で複数件退避して成功する / 候補が尽きたら諦める）、C4
+- `lib/__tests__/surface-cache.test.ts` — C2（変化時のみ書く）、C3（Quota で複数件退避して成功する / 候補が尽きたら諦める）、C4、
+  C5（直列化後サイズ超過で `scrollback` を削って収める）、C6（背面は書かない・書き込み回数を数える）
 - `hooks/__tests__/useCmux.test.ts` — **`workspace.select` が一度も飛ばないこと**（D1 の回帰ガード）。
   `createSurface` が `workspace_id` を渡し、レスポンスから ref を取り、`workspace_id` 不一致を検出すること。
   切断時に in-flight の RPC が 10 秒を待たず reject されること（D10）。
@@ -570,7 +646,7 @@ cmux を更新したらこれを流し、CLAUDE.md の記述と食い違わな�
 |---|---|---|
 | R1 | 端末が 30 個ある環境ではタブ行が長大になる | ドロワーの一覧（5.2）がジャンプ手段。検索やフィルタは必要になってから |
 | R2 | 実測は 1 つの cmux ビルドでのもの。将来の更新で前提が崩れる | §8 のプローブスクリプトを残し、CLAUDE.md から参照する（D11） |
-| R3 | 3 クライアント同時で前面 p95 が 1 秒を超える | D6 に安全域（2 台）と 3 つの緩和策を明記。今回は実装しない。上限変更前に再測定を必須とする |
+| R3 | 3 クライアント同時で前面 p95 が 1 秒を超える | D6 に安全域（2 台）と 3 つの緩和策を明記。今回は実装しない。上限変更前に再測定を必須とする。**4 台目を自動検知して自動縮退する仕組みは入れない**（検知手段が無く、入れると複雑さに見合わない） |
 | R4 | activity 判定は grid の比較で行うため、カーソル点滅だけでも変化と見なす可能性 | 比較対象から `cursor` を除いた `lines` のみをハッシュする |
 | R5 | 通知タップはワークスペース単位のまま | 範囲外（D1 の表） |
 | R6 | タブ行の並びが `system.tree` 順のため並べ替えられない | 範囲外。cmux 側の並びと一致している方が混乱が少ない。`surface.reorder` は存在するが cmux 本体の並びを変えるため使わない |
