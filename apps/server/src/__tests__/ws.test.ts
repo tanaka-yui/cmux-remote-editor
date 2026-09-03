@@ -45,7 +45,7 @@ describe('rewriteRequest', () => {
     expect(out.wire).toEqual({
       id: '3',
       method: 'surface.create',
-      params: { type: 'terminal', focus: true, workspace_ref: 'workspace:23' },
+      params: { type: 'terminal', focus: false, workspace_ref: 'workspace:23' },
     })
     expect(out.expectList).toBe(false)
 
@@ -126,5 +126,91 @@ describe('flattenSurfaces', () => {
     const result = flattenSurfaces(browserTree, 'workspace:6')
     expect(result.map((s) => s.url)).toEqual([null, 'https://example.com/'])
     expect(result[1].type).toBe('browser')
+  })
+
+  const treeWithTwoWorkspaces = {
+    windows: [
+      {
+        workspaces: [
+          {
+            ref: 'workspace:1',
+            id: 'C459840B-0000-0000-0000-000000000001',
+            title: 'influencer-platform',
+            panes: [
+              { ref: 'pane:1', surfaces: [{ ref: 'surface:1', title: '[1] zsh', type: 'terminal', selected: true }] },
+            ],
+          },
+          {
+            ref: 'workspace:26',
+            id: 'C459840B-0000-0000-0000-000000000026',
+            title: 'freelance-jp-app',
+            panes: [
+              {
+                ref: 'pane:9',
+                surfaces: [
+                  { ref: 'surface:98', title: '[7] vim', type: 'terminal', selected: true },
+                  { ref: 'surface:99', title: 'docs', type: 'browser', url: 'https://example.com' },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    active: { workspace_ref: 'workspace:26', surface_ref: 'surface:98' },
+  }
+
+  it('全ワークスペースの各行に workspace_ref / workspace_title / workspace_id を付ける', () => {
+    const out = flattenSurfaces(treeWithTwoWorkspaces)
+    expect(out).toHaveLength(3)
+    expect(out[0]).toMatchObject({
+      ref: 'surface:1',
+      workspace_ref: 'workspace:1',
+      workspace_title: 'influencer-platform',
+      workspace_id: 'C459840B-0000-0000-0000-000000000001',
+    })
+    expect(out[2]).toMatchObject({
+      ref: 'surface:99',
+      workspace_ref: 'workspace:26',
+      workspace_title: 'freelance-jp-app',
+      url: 'https://example.com',
+    })
+  })
+
+  it('active は result.active.surface_ref と一致する 1 件だけ true になる', () => {
+    const out = flattenSurfaces(treeWithTwoWorkspaces)
+    expect(out.filter((s) => s.active)).toHaveLength(1)
+    expect(out.find((s) => s.active)?.ref).toBe('surface:98')
+  })
+
+  it('selected は複数 true になり得るが active は 1 件に保たれる', () => {
+    const out = flattenSurfaces(treeWithTwoWorkspaces)
+    expect(out.filter((s) => s.selected).length).toBeGreaterThan(1)
+    expect(out.filter((s) => s.active)).toHaveLength(1)
+  })
+
+  it('active が tree に無ければ全件 false', () => {
+    const out = flattenSurfaces({ ...treeWithTwoWorkspaces, active: undefined })
+    expect(out.every((s) => !s.active)).toBe(true)
+  })
+})
+
+describe('rewriteRequest の surface.create 既定 (D6.1)', () => {
+  it('focus:false を注入する', () => {
+    const out = rewriteRequest({ id: '1', method: 'surface.create', params: {} })
+    expect(out.wire.params).toMatchObject({ type: 'terminal', focus: false })
+  })
+
+  it('呼び出し側が渡した workspace_id と focus は上書きしない', () => {
+    const out = rewriteRequest({
+      id: '1',
+      method: 'surface.create',
+      params: { workspace_id: 'C459840B-0000-0000-0000-000000000026', focus: true },
+    })
+    expect(out.wire.params).toMatchObject({
+      type: 'terminal',
+      focus: true,
+      workspace_id: 'C459840B-0000-0000-0000-000000000026',
+    })
   })
 })

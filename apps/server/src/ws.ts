@@ -22,6 +22,8 @@ interface TreePane {
 
 interface TreeWorkspace {
   ref: string
+  id?: string
+  title?: string
   panes?: TreePane[]
 }
 
@@ -31,15 +33,22 @@ interface TreeWindow {
 
 interface CmuxTree {
   windows?: TreeWindow[]
+  active?: { workspace_ref?: string; surface_ref?: string; pane_ref?: string }
 }
 
 export interface FlatSurface {
   index: number
   ref: string
   selected: boolean
+  // system.tree の result.active.surface_ref と一致する 1 件だけ true。初期前面の決定に使う。
+  active: boolean
   title: string
   type: string
   pane_ref: string
+  workspace_ref: string
+  workspace_title: string
+  // surface.create の作成先指定に使う UUID（workspace_ref は無視される）。
+  workspace_id: string
   // null for terminals; the browser surface's current URL otherwise.
   url: string | null
 }
@@ -47,6 +56,7 @@ export interface FlatSurface {
 // Walk the cmux tree and flatten every surface across all panes of the target
 // workspace into a single ordered list (split panes included).
 export function flattenSurfaces(tree: CmuxTree, workspaceRef?: string): FlatSurface[] {
+  const activeSurfaceRef = tree.active?.surface_ref
   const out: FlatSurface[] = []
   for (const win of tree.windows ?? []) {
     for (const ws of win.workspaces ?? []) {
@@ -57,9 +67,13 @@ export function flattenSurfaces(tree: CmuxTree, workspaceRef?: string): FlatSurf
             index: out.length,
             ref: surface.ref,
             selected: Boolean(surface.selected),
+            active: activeSurfaceRef !== undefined && surface.ref === activeSurfaceRef,
             title: surface.title ?? surface.ref,
             type: surface.type ?? 'terminal',
             pane_ref: pane.ref,
+            workspace_ref: ws.ref,
+            workspace_title: ws.title ?? ws.ref,
+            workspace_id: ws.id ?? '',
             url: surface.url ?? null,
           })
         }
@@ -103,7 +117,7 @@ export function rewriteRequest(req: RpcRequestLike): RewrittenRequest {
 
   if (req.method === 'surface.create') {
     return {
-      wire: { id: req.id, method: 'surface.create', params: { type: 'terminal', focus: true, ...params } },
+      wire: { id: req.id, method: 'surface.create', params: { type: 'terminal', focus: false, ...params } },
       expectList: false,
     }
   }
