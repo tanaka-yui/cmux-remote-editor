@@ -44,6 +44,7 @@ export function useTerminalFeeds(props: UseTerminalFeedsProps): void {
   const planKey = plan.map((p) => `${p.ref}:${p.intervalMs}`).join(',')
 
   const inFlightRef = useRef(new Set<string>())
+  const completionHandoffRef = useRef(new Map<string, () => void>())
   const staleResyncRef = useRef(new Set<string>())
   const lastGridJsonRef = useRef(new Map<string, string>())
   const lastScrollbackRef = useRef(new Map<string, string>())
@@ -75,6 +76,15 @@ export function useTerminalFeeds(props: UseTerminalFeedsProps): void {
       )
     }
 
+    // plan の張り直し時に旧 cycle が残っていれば、次回予約をその完了時点へ引き継ぐ。
+    const armOrHandoff = (ref: string, intervalMs: number, delay: number, completionDelay: number) => {
+      if (!inFlightRef.current.has(ref)) {
+        arm(ref, intervalMs, delay)
+        return
+      }
+      completionHandoffRef.current.set(ref, () => arm(ref, intervalMs, completionDelay))
+    }
+
     const cycle = async (ref: string, intervalMs: number) => {
       if (stopped) return
       // E4: hidden 中はタイマーを張らない。ここで予約しないでよいのは、
@@ -83,7 +93,7 @@ export function useTerminalFeeds(props: UseTerminalFeedsProps): void {
       if (isDocumentHidden()) return
       // E2: サーフェスごとの in-flight は常に 1 件まで。
       if (inFlightRef.current.has(ref)) {
-        arm(ref, intervalMs, intervalMs)
+        completionHandoffRef.current.set(ref, () => arm(ref, intervalMs, intervalMs))
         return
       }
       inFlightRef.current.add(ref)
@@ -91,11 +101,17 @@ export function useTerminalFeeds(props: UseTerminalFeedsProps): void {
       // F7: 適用可否は epoch の一致で判定する。時刻（promotedAt 以降か）では、
       // 追い出し前に開始した RPC が再昇格の後に返るケースを除外できない。
       const epoch = latest.current.feeds.get(ref)?.epoch ?? 0
+      const isCurrentCycle = () => {
+        if (shouldDiscardResponse()) return false
+        const current = latest.current
+        if (current.feeds.get(ref)?.epoch !== epoch) return false
+        return pollPlan(current.view, current.surfaces, current.visibleRefs).some((entry) => entry.ref === ref)
+      }
       try {
         const grid = await latest.current.readGrid(ref)
         // E4: 取得中に hidden になった応答、および切断・unmount 後の応答は反映しない。
         // hidden からの復帰時は onVisibility が全 plan entry を張り直す。
-        if (shouldDiscardResponse()) return
+        if (!isCurrentCycle()) return
         // **await の後は必ず latest.current を読み直す。** 開始時点の isVisible を
         // 使い回すと、待機中に別端末へ切り替えたときに「もう背面になった ref」へ
         // scrollback RPC を投げ、localStorage にも書いてしまう（C1/C6 と
@@ -125,7 +141,7 @@ export function useTerminalFeeds(props: UseTerminalFeedsProps): void {
           // grid 側だけ確認して history 側を素通しすると、背面になった ref の
           // state と localStorage が更新される。
           const after = latest.current
-          if (shouldDiscardResponse() || !after.pinned || !after.visibleRefs.includes(ref)) return
+          if (!isCurrentCycle() || !after.pinned || !after.visibleRefs.includes(ref)) return
           after.applyFeedHistory({ ref, epoch, history: stripVisibleScreen(text, visibleLineCount(grid)) })
           if (text !== lastScrollbackRef.current.get(ref)) {
             lastScrollbackRef.current.set(ref, text)
@@ -135,7 +151,7 @@ export function useTerminalFeeds(props: UseTerminalFeedsProps): void {
       } catch (err) {
         // 待機中に hidden になってから返った rejection も反映しない
         // （hidden 中に applyFeedError と T4 の topology refresh が走ってしまう）。
-        if (shouldDiscardResponse()) return
+        if (!isCurrentCycle()) return
         const p = latest.current
         // T4: 閉じられた surface を指すと cmux は「Missing or invalid terminal_id」を
         // 返し続ける。一覧を取り直せば reconcile が生きた surface へ退避する。
@@ -150,9 +166,15 @@ export function useTerminalFeeds(props: UseTerminalFeedsProps): void {
         }
       } finally {
         inFlightRef.current.delete(ref)
-        // E1: 完了してから次回を予約する。開始時刻を起点に遅れを取り戻さない。
-        // hidden 中は張らない（復帰時に resume が全件張り直す。E4）。
-        if (!isDocumentHidden()) arm(ref, intervalMs, intervalMs)
+        const handoff = completionHandoffRef.current.get(ref)
+        if (handoff) {
+          completionHandoffRef.current.delete(ref)
+          handoff()
+        } else {
+          // E1: 完了してから次回を予約する。開始時刻を起点に遅れを取り戻さない。
+          // hidden 中は張らない（復帰時に resume が全件張り直す。E4）。
+          if (!isDocumentHidden()) arm(ref, intervalMs, intervalMs)
+        }
       }
     }
 
@@ -164,7 +186,7 @@ export function useTerminalFeeds(props: UseTerminalFeedsProps): void {
       let backgroundIndex = 0
       for (const entry of plan) {
         const delay = visibleRefs.includes(entry.ref) ? 0 : backgroundIndex++ * BACKGROUND_STAGGER
-        arm(entry.ref, entry.intervalMs, delay)
+        armOrHandoff(entry.ref, entry.intervalMs, delay, entry.intervalMs)
       }
     }
 
@@ -184,7 +206,8 @@ export function useTerminalFeeds(props: UseTerminalFeedsProps): void {
       let bg = 0
       for (const entry of plan) {
         const isVisible = latest.current.visibleRefs.includes(entry.ref)
-        arm(entry.ref, entry.intervalMs, isVisible ? 0 : entry.intervalMs + bg++ * BACKGROUND_STAGGER)
+        const delay = isVisible ? 0 : entry.intervalMs + bg++ * BACKGROUND_STAGGER
+        armOrHandoff(entry.ref, entry.intervalMs, delay, delay)
       }
     }
     document.addEventListener('visibilitychange', onVisibility)

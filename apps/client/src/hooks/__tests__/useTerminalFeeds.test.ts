@@ -395,6 +395,47 @@ describe('useTerminalFeeds — 実行規律', () => {
     expect((at[1] as number) - (at[0] as number)).toBe(1500)
   })
 
+  it('E1: plan 変更中の旧 in-flight 完了から新 interval を待って次を開始する', async () => {
+    const at: number[] = []
+    const readGrid = mockReadGrid(async () => {
+      at.push(Date.now())
+      return gridOf('next')
+    }).mockImplementationOnce(async () => {
+      at.push(Date.now())
+      await new Promise((resolve) => setTimeout(resolve, 500))
+      return gridOf('first')
+    })
+    const h = harness({
+      subscribed: ['surface:1'],
+      visible: ['surface:1'],
+      surfaces: [surfaceOf('surface:1'), surfaceOf('surface:2', 'browser', 1)],
+      pinned: false,
+      readGrid,
+    })
+    const { rerender } = renderHook((props: Parameters<typeof useTerminalFeeds>[0]) => useTerminalFeeds(props), {
+      initialProps: h.props,
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    rerender({
+      ...h.props,
+      view: { ...h.props.view, foreground: 'surface:2' },
+      visibleRefs: ['surface:2'],
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3499)
+    })
+    expect(at).toHaveLength(1)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1)
+    })
+    expect(at).toHaveLength(2)
+    expect((at[1] as number) - (at[0] as number)).toBe(3500)
+  })
+
   it('E3: 背面の初回発火が index * BACKGROUND_STAGGER ずれる', async () => {
     const at = new Map<string, number>()
     const readGrid = mockReadGrid(async (ref: string) => {
@@ -466,40 +507,68 @@ describe('useTerminalFeeds — 状態遷移', () => {
     expect(h.applyFeedError).toHaveBeenCalledWith(expect.objectContaining({ ref: 'surface:1', epoch: 1 }))
   })
 
-  it('F7: 応答には「開始時点」の epoch を付けて渡す（破棄の判定は reducer が行う）', async () => {
-    let resolveFirst: ((g: RenderGrid | null) => void) | undefined
-    const readGrid = mockReadGrid(() => Promise.resolve(gridOf('x'))).mockImplementationOnce(
+  it('F7: replay 待機中に epoch が進んだ成功応答は cache と read_text を更新しない', async () => {
+    let resolveGrid: ((grid: RenderGrid | null) => void) | undefined
+    const readGrid = mockReadGrid(() => Promise.resolve(gridOf('next'))).mockImplementationOnce(
       () =>
-        new Promise<RenderGrid | null>((r) => {
-          resolveFirst = r
+        new Promise<RenderGrid | null>((resolve) => {
+          resolveGrid = resolve
         }),
     )
-    // epoch 1 で購読中
-    const h = harness({
-      subscribed: ['surface:1'],
-      visible: ['surface:1'],
-      feeds: { 'surface:1': feedOf({ epoch: 1, promotedAt: 1000 }) },
-      readGrid,
-    })
-    const { rerender } = renderHook((p: Parameters<typeof useTerminalFeeds>[0]) => useTerminalFeeds(p), {
+    const h = harness({ subscribed: ['surface:1'], visible: ['surface:1'], pinned: true, readGrid })
+    const setItem = vi.spyOn(localStorage, 'setItem')
+    const { rerender } = renderHook((props: Parameters<typeof useTerminalFeeds>[0]) => useTerminalFeeds(props), {
       initialProps: h.props,
     })
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(10)
-    })
-    // 追い出し → 再昇格で epoch が 2 になる（promotedAt も進む）
-    const promoted = new Map(h.props.feeds).set('surface:1', feedOf({ epoch: 2, promotedAt: 5000 }))
-    rerender({ ...h.props, feeds: promoted })
-    // 昇格「前」に開始した RPC が、昇格「後」に解決する。時刻だけ見れば promotedAt より後。
-    await act(async () => {
-      resolveFirst?.(gridOf('stale'))
       await vi.advanceTimersByTimeAsync(0)
     })
-    // hook は「捕まえた epoch」を付けて渡す。1 であって 2 ではない。
-    const staleCall = h.applyFeedResult.mock.calls.find(
-      (c) => (c[0] as { grid: RenderGrid | null }).grid?.row_spans?.[0]?.text === 'stale',
+    rerender({
+      ...h.props,
+      feeds: new Map(h.props.feeds).set('surface:1', feedOf({ epoch: 2, promotedAt: 2000 })),
+    })
+
+    await act(async () => {
+      resolveGrid?.(gridOf('stale'))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect(h.applyFeedResult).not.toHaveBeenCalled()
+    expect(h.readText).not.toHaveBeenCalled()
+    expect(setItem).not.toHaveBeenCalled()
+    expect(h.requestTopologyRefresh).not.toHaveBeenCalled()
+  })
+
+  it('F7: replay 待機中に epoch が進んだ stale error は feed と topology を更新しない', async () => {
+    let rejectGrid: ((error: Error) => void) | undefined
+    const readGrid = mockReadGrid(() => Promise.resolve(gridOf('next'))).mockImplementationOnce(
+      () =>
+        new Promise<RenderGrid | null>((_, reject) => {
+          rejectGrid = reject
+        }),
     )
-    expect((staleCall?.[0] as { epoch: number }).epoch).toBe(1)
+    const h = harness({ subscribed: ['surface:1'], visible: ['surface:1'], pinned: true, readGrid })
+    const setItem = vi.spyOn(localStorage, 'setItem')
+    const { rerender } = renderHook((props: Parameters<typeof useTerminalFeeds>[0]) => useTerminalFeeds(props), {
+      initialProps: h.props,
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    rerender({
+      ...h.props,
+      feeds: new Map(h.props.feeds).set('surface:1', feedOf({ epoch: 2, promotedAt: 2000 })),
+    })
+
+    await act(async () => {
+      rejectGrid?.(Object.assign(new Error('Missing or invalid terminal_id'), { code: 'invalid_params' }))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect(h.applyFeedError).not.toHaveBeenCalled()
+    expect(h.readText).not.toHaveBeenCalled()
+    expect(setItem).not.toHaveBeenCalled()
+    expect(h.requestTopologyRefresh).not.toHaveBeenCalled()
   })
 })
 
