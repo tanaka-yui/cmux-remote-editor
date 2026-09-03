@@ -55,7 +55,7 @@ Rancher Desktop（Lima VM / virtiofs）は bind mount したホストの UNIX �
 - `index.ts` — エントリ。`Bun.serve` で WS upgrade（`/ws`、トークン必須）・Hono ルート（`/health`、クライアント静的配信）を振り分け。
 - `ws.ts` — 中核。ブラウザ WS ⇄ cmux UDS の JSON-RPC 透過中継。WS 接続ごとに cmux への UDS 接続を 1 本張る。例外的に書き換える RPC が 2 つ:
   - `surface.list` → `system.tree` に変換し、応答を全ペインのサーフェスに平坦化して `{ surfaces }` に整形（ソケット側の `surface.list` は `workspace_ref` を無視するため）。
-  - `surface.create` → `type: 'terminal', focus: true` のデフォルトを注入。
+  - `surface.create` → `type: 'terminal', focus: false` のデフォルトを注入。
   - cmux ソケットが閉じたら WS を code 1011 で閉じ、クライアントの再接続にフォールバックさせる。
   - UDS 読み取りは **`createLineFramer`（`node:string_decoder` の `StringDecoder`）で UTF-8 安全に行フレーミングする** — `data.toString()` をチャンクごとに連結すると絵文字(4byte)/CJK(3byte) がチャンク境界で割れて U+FFFD（画面上「??」）に化けるため。`render_grid` の文字化けはまずここを疑う（[[server-utf8-chunk-framing]]）。
 - `auth.ts` — WS 共有トークン。優先順: 環境変数 `CMUX_REMOTE_TOKEN`（`apps/server/.env` も Bun が自動読込）→ `apps/server/.run/token`（無ければ自動生成・永続化）。比較は `timingSafeEqual`。

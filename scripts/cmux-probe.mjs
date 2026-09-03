@@ -267,7 +267,7 @@ async function runLoad(socketPath, clients, targets) {
   }
 
   console.log(`\nload: ${clients} client(s), ${LOAD_DURATION_MS / 1000}s each`)
-  console.log('  per client: foreground replay + read_text @1Hz; up to 7 background replay @3s, staggered 400ms')
+  console.log('  per client: foreground replay + read_text, then wait 1s; up to 7 background replay, then wait 3s, staggered 400ms')
 
   async function runClient(tag) {
     const connection = createRpcConnection(socketPath)
@@ -284,7 +284,7 @@ async function runLoad(socketPath, clients, targets) {
         await connection.rpc('terminal.replay', { surface_id: foreground.id })
         await connection.rpc('surface.read_text', { surface_id: foreground.id, scrollback: true, lines: SCROLLBACK_LINES })
         foregroundLatencies.push(Date.now() - startedAt)
-        await delay(Math.max(0, FOREGROUND_INTERVAL_MS - (Date.now() - startedAt)))
+        await delay(FOREGROUND_INTERVAL_MS)
       }
     }
     const backgroundLoop = (surface, index) =>
@@ -294,7 +294,7 @@ async function runLoad(socketPath, clients, targets) {
           const startedAt = Date.now()
           await connection.rpc('terminal.replay', { surface_id: surface.id })
           backgroundLatencies.push(Date.now() - startedAt)
-          await delay(Math.max(0, BACKGROUND_INTERVAL_MS - (Date.now() - startedAt)))
+          await delay(BACKGROUND_INTERVAL_MS)
         }
       })()
 
@@ -334,15 +334,30 @@ async function runWriteProbe(rpc) {
   }
 
   const scratchIds = new Set()
-  const findNewSurface = async (knownIds) => {
+  const resolveCreatedSurface = async (response) => {
+    const surfaceId = typeof response.result?.surface_id === 'string' ? response.result.surface_id : null
+    const surfaceRef = typeof response.result?.surface_ref === 'string' ? response.result.surface_ref : null
+    if (!isSuccess(response) || (!surfaceId && !surfaceRef)) {
+      console.log('    aborted: surface.create response has no trusted surface_id or surface_ref; no further writes will run')
+      return null
+    }
+
     await delay(900)
     const currentWindow = getWindow(await rpc('system.tree', {}))
-    return terminalSurfaces(currentWindow).find((surface) => !knownIds.has(surface.id))
+    const matches = terminalSurfaces(currentWindow).filter(
+      (surface) => (!surfaceId || surface.id === surfaceId) && (!surfaceRef || surface.ref === surfaceRef),
+    )
+    if (matches.length !== 1) {
+      console.log(
+        `    aborted: response identity surface_id=${surfaceId ?? '-'} surface_ref=${surfaceRef ?? '-'} matched ${matches.length} surfaces; no further writes will run`,
+      )
+      return null
+    }
+    return matches[0]
   }
-  const createScratch = async (label, params, expectedWorkspaceId) => {
-    const before = new Set(terminalSurfaces(getWindow(await rpc('system.tree', {}))).map((surface) => surface.id))
-    const response = await rpc('surface.create', { type: 'terminal', focus: false, ...params })
-    const created = await findNewSurface(before)
+  const createScratch = async (label, params, expectedWorkspaceId, focus = false) => {
+    const response = await rpc('surface.create', { type: 'terminal', focus, ...params })
+    const created = await resolveCreatedSurface(response)
     if (created) scratchIds.add(created.id)
     const responseWorkspaceId = response.result?.workspace_id
     console.log(`  ${label}: ${summarize(response)}`)
@@ -357,32 +372,35 @@ async function runWriteProbe(rpc) {
 
   console.log(`\nwrite probe: original selection=${originalWorkspace.ref}; all writes use disposable terminal surfaces`)
   try {
-    await createScratch('workspace_ref ignored', { workspace_ref: targetWorkspace.ref }, originalWorkspace.id)
+    const workspaceRefScratch = await createScratch('workspace_ref ignored', { workspace_ref: targetWorkspace.ref }, originalWorkspace.id)
+    if (!workspaceRefScratch) return
 
     const scratch = await createScratch('workspace_id targets non-selected workspace', { workspace_id: targetWorkspace.id }, targetWorkspace.id)
-    if (scratch) {
-      const signature = `CMUX_PROBE_${Date.now()}`
-      const sent = await rpc('surface.send_text', { surface_id: scratch.id, text: `printf '${signature}\\n'\\r` })
-      await delay(1_500)
-      const readBack = await rpc('surface.read_text', { surface_id: scratch.id })
-      console.log(`  send_text disposable surface: ${summarize(sent)}`)
-      console.log(`    signature read back=${typeof readBack.result?.text === 'string' && readBack.result.text.includes(signature)}`)
+    if (!scratch) return
 
-      const moved = await rpc('surface.move', { surface_id: scratch.id, workspace_id: originalWorkspace.id })
-      await delay(700)
-      const movedSurface = findSurface(getWindow(await rpc('system.tree', {})), scratch.id)
-      console.log(`  surface.move disposable surface: ${summarize(moved)}`)
-      console.log(`    actual destination=${movedSurface?.workspace.ref ?? '-'} expected=${originalWorkspace.ref}`)
-    }
+    const signature = `CMUX_PROBE_${Date.now()}`
+    const sent = await rpc('surface.send_text', { surface_id: scratch.id, text: `printf '${signature}\\n'\\r` })
+    await delay(1_500)
+    const readBack = await rpc('surface.read_text', { surface_id: scratch.id })
+    console.log(`  send_text disposable surface: ${summarize(sent)}`)
+    console.log(`    signature read back=${typeof readBack.result?.text === 'string' && readBack.result.text.includes(signature)}`)
 
-    await createScratch('invalid workspace_id falls back to selected workspace', { workspace_id: 'BOGUS-NOT-A-UUID' }, originalWorkspace.id)
+    const moved = await rpc('surface.move', { surface_id: scratch.id, workspace_id: originalWorkspace.id })
+    await delay(700)
+    const movedSurface = findSurface(getWindow(await rpc('system.tree', {})), scratch.id)
+    console.log(`  surface.move disposable surface: ${summarize(moved)}`)
+    console.log(`    actual destination=${movedSurface?.workspace.ref ?? '-'} expected=${originalWorkspace.ref}`)
 
-    const beforeFocus = new Set(terminalSurfaces(getWindow(await rpc('system.tree', {}))).map((surface) => surface.id))
-    const focused = await rpc('surface.create', { type: 'terminal', focus: true, workspace_id: targetWorkspace.id })
-    const focusedSurface = await findNewSurface(beforeFocus)
-    if (focusedSurface) scratchIds.add(focusedSurface.id)
+    const invalidWorkspaceScratch = await createScratch(
+      'invalid workspace_id falls back to selected workspace',
+      { workspace_id: 'BOGUS-NOT-A-UUID' },
+      originalWorkspace.id,
+    )
+    if (!invalidWorkspaceScratch) return
+
+    const focusedSurface = await createScratch('focus:true disposable create', { workspace_id: targetWorkspace.id }, targetWorkspace.id, true)
+    if (!focusedSurface) return
     const afterFocus = getWindow(await rpc('system.tree', {}))
-    console.log(`  focus:true disposable create: ${summarize(focused)}`)
     console.log(`    selection changed to target=${afterFocus.workspaces?.some((workspace) => workspace.selected && workspace.id === targetWorkspace.id)}`)
   } finally {
     for (const surfaceId of scratchIds) {
